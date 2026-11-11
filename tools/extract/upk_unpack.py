@@ -12,7 +12,8 @@ Format (measured on the 2026-10-31 build, package version 868/34):
     (zero in every package seen so far; meaning unknown), i.e. a 36-byte stride.
   - Each chunk is a standard UE3 compressed chunk (tag 0x9E2A83C1, block size, summary, block table, zlib blocks).
 Output: header with decrypted names/imports/exports, followed by the uncompressed body at its uncompressed offsets;
-CompressionFlags is set to 0 so readers take it as an uncompressed package.
+CompressionFlags and the three RL fields are set to 0 so readers take it as a plain, uncompressed package
+(our patched umodel skips its RL decryption path when CompressedChunkInfoOffset is 0).
 
 Usage: upk_unpack.py <keyfile> <out_dir> <package.upk>...    (keyfile: one hex AES-256 key per line; all are tried)
 """
@@ -46,7 +47,7 @@ def parse_summary(d):
         o += 20
         k = struct.unpack_from("<i", d, o)[0]; o += 4 + 4 * k
     garbage, chunkinfo, lastblock = struct.unpack_from("<iii", d, o)
-    return dict(total=total, noff=noff, cflags=cflags, cflags_off=cflags_off, nchunks=nchunks, garbage=garbage,
+    return dict(rl_off=o, total=total, noff=noff, cflags=cflags, cflags_off=cflags_off, nchunks=nchunks, garbage=garbage,
                 chunkinfo=chunkinfo, lastblock=lastblock)
 
 
@@ -94,6 +95,7 @@ def unpack(path, keys, out_dir):
     out[:s["noff"]] = d[:s["noff"]]
     out[s["noff"]:body_start] = pt[:body_start - s["noff"]]
     struct.pack_into("<I", out, s["cflags_off"], 0)
+    struct.pack_into("<iii", out, s["rl_off"], 0, 0, 0)  # GarbageSize/ChunkInfoOffset/LastBlockSize = 0: "plain"
     for uoff, usize, coff, csize in chunks:
         b = decompress_chunk(d, coff)
         if len(b) != usize:
