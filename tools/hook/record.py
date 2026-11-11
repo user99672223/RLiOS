@@ -8,6 +8,11 @@ Scenario file (text, v1):
     ball   pos 0 0 10           # Bullet units (1 BU = 50 uu). Floats, or exact bits as 0x41200000
     ball   vel 0 0 0
     ball   angvel 0 0 0
+    ball   basis 1 0 0  0 1 0  0 0 1     # rotation matrix, row-major (btMatrix3x3 rows)
+    ball   quat 0 0 0 1                  # alternative to basis: x y z w (converted like btMatrix3x3::setRotation)
+    ball   inertia <9 numbers>           # optional world inverse inertia tensor; default: derived from the rotation
+Setting the rotation also sets the body's world inverse inertia tensor (btRigidBody+0x130), which is real state
+(the solver uses it before the next integration refreshes it).
 Unset fields keep whatever the game has. All edits are applied at one tick boundary; recording starts with the
 state after the following tick.
 
@@ -30,6 +35,47 @@ OFF_RBSTATE = 0x5E0
 
 def fbits(tok):
     return bytes.fromhex(tok[2:].zfill(8))[::-1] if tok.lower().startswith("0x") else struct.pack("<f", float(tok))
+
+
+def f32(x):
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def num(tok):
+    return struct.unpack("<f", fbits(tok))[0]
+
+
+def quat_to_basis(q):
+    """btMatrix3x3::setRotation in float arithmetic (same operation order as core/sim/vec.h setRotation)."""
+    x, y, z, w = q
+    d = f32(f32(f32(f32(x * x) + f32(y * y)) + f32(z * z)) + f32(w * w))
+    s = f32(2.0 / d)
+    xs, ys, zs = f32(x * s), f32(y * s), f32(z * s)
+    wx, wy, wz = f32(w * xs), f32(w * ys), f32(w * zs)
+    xx, xy, xz = f32(x * xs), f32(x * ys), f32(x * zs)
+    yy, yz, zz = f32(y * ys), f32(y * zs), f32(z * zs)
+    return [f32(1.0 - f32(yy + zz)), f32(xy - wz), f32(xz + wy),
+            f32(xy + wz), f32(1.0 - f32(xx + zz)), f32(yz - wx),
+            f32(xz - wy), f32(yz + wx), f32(1.0 - f32(xx + yy))]
+
+
+INV_INERTIA_LOCAL = {"ball": struct.unpack("<f", bytes.fromhex("71f7cc3c"))[0]}  # btRigidBody+0x1C0, measured
+
+
+def inertia_world(basis, k):
+    """btRigidBody::updateInertiaTensor: basis.scaled(k) * basis^T, float arithmetic (core/sim ballInvInertiaWorld)."""
+    sc = [f32(v * k) for v in basis]
+    out = []
+    for i in range(3):
+        for j in range(3):
+            out.append(f32(f32(f32(sc[i * 3] * basis[j * 3]) + f32(sc[i * 3 + 1] * basis[j * 3 + 1]))
+                           + f32(sc[i * 3 + 2] * basis[j * 3 + 2])))
+    return out
+
+
+def rows4(m):
+    """3x3 -> three btVector3 rows (4 floats each, w = 0)."""
+    return b"".join(struct.pack("<4f", m[i * 3], m[i * 3 + 1], m[i * 3 + 2], 0.0) for i in range(3)).hex()
 
 
 def send(lines, wait=2.0):
@@ -102,7 +148,7 @@ def main():
         if not t:
             continue
         if t[0] in ("ball", "car"):
-            edits.setdefault(t[0], {})[t[1]] = t[2:5]
+            edits.setdefault(t[0], {})[t[1]] = t[2:]
         else:
             cfg[t[0]] = t[1]
     name, arena, ticks = cfg["name"], cfg.get("arena", "Stadium_P"), int(cfg["ticks"])
@@ -125,18 +171,32 @@ def main():
         if not a:
             continue
         cmds += [f"watchp {label}_bt_xform 0x{a:x} 0x{OFF_BT:x} 0x10 0x40", f"watchp {label}_bt_vel 0x{a:x} 0x{OFF_BT:x} 0x160 0x20",
-                 f"watch {label}_rbstate 0x{a:x} 0x{OFF_RBSTATE:x} 0x3c"]
+                 f"watch {label}_rbstate 0x{a:x} 0x{OFF_RBSTATE:x} 0x3c",
+                 f"watchp {label}_bt_inertia 0x{a:x} 0x{OFF_BT:x} 0x130 0x30", f"watchp {label}_bt_act 0x{a:x} 0x{OFF_BT:x} 0xf4 0x8"]
     for label, e in edits.items():
         bt = read_ptr(actors[label] + OFF_BT)
         if "pos" in e:
-            h = b"".join(fbits(x) for x in e["pos"]).hex()
+            h = b"".join(fbits(x) for x in e["pos"][:3]).hex()
             cmds += [f"poke 0x{bt:x} 0x40 {h}", f"poke 0x{bt:x} 0x80 {h}"]  # world + interpolation transform origin
         if "vel" in e:
-            h = b"".join(fbits(x) for x in e["vel"]).hex()
+            h = b"".join(fbits(x) for x in e["vel"][:3]).hex()
             cmds += [f"poke 0x{bt:x} 0x160 {h}", f"poke 0x{bt:x} 0x90 {h}"]  # + interpolation linear velocity
         if "angvel" in e:
-            h = b"".join(fbits(x) for x in e["angvel"]).hex()
+            h = b"".join(fbits(x) for x in e["angvel"][:3]).hex()
             cmds += [f"poke 0x{bt:x} 0x170 {h}", f"poke 0x{bt:x} 0xa0 {h}"]
+        basis = None
+        if "basis" in e:
+            basis = [num(x) for x in e["basis"][:9]]
+        elif "quat" in e:
+            basis = quat_to_basis([num(x) for x in e["quat"][:4]])
+        if basis:
+            h = rows4(basis)
+            cmds += [f"poke 0x{bt:x} 0x10 {h}", f"poke 0x{bt:x} 0x50 {h}"]  # world + interpolation transform basis
+        inertia = [num(x) for x in e["inertia"][:9]] if "inertia" in e else None
+        if inertia is None and basis and label in INV_INERTIA_LOCAL:
+            inertia = inertia_world(basis, INV_INERTIA_LOCAL[label])
+        if inertia:
+            cmds.append(f"poke 0x{bt:x} 0x130 {rows4(inertia)}")  # m_invInertiaTensorWorld
         cmds.append(f"poke 0x{bt:x} 0xf4 0100000000000000")  # ACTIVE_TAG, deactivation time 0 (a resting body sleeps)
     cmds.append(f"recstart {name}.tsv {ticks}")
     print(send(cmds))

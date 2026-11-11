@@ -5,6 +5,11 @@
 # Env: OBJDUMP (default objdump), CXX (default c++) for --selftest.
 set -euo pipefail
 OBJDUMP="${OBJDUMP:-objdump}"
+# Exempt: core/sim/crt_math.cpp only. It reproduces the Microsoft UCRT sinf/cosf the game calls, and
+# that code (ucrtbase.dll FMA3 path, the one every current x64 CPU takes) fuses its polynomial
+# steps. The port writes each fused step as an explicit std::fma, which arm64 compiles to fmadd.
+# Everything else in sim/ and game/ mirrors non-fused SSE code and must stay free of fused ops.
+EXEMPT='/crt_math\.cpp\.o$'
 PATTERN='\b(fmadd|fmsub|fnmadd|fnmsub|fmla|fmls|fmad)\b'
 
 if [[ "${1:-}" == "--selftest" ]]; then
@@ -30,6 +35,7 @@ echo "checking ${#objs[@]} objects ($arch)"
 insns=0
 fail=0
 for o in "${objs[@]}"; do
+  if [[ "$o" =~ $EXEMPT ]]; then echo "exempt (explicit UCRT fma port): $o"; continue; fi
   dis="$("$OBJDUMP" -d "$o")"
   n="$(grep -cE '^\s+[0-9a-f]+:\s' <<<"$dis" || true)"
   insns=$((insns + n))

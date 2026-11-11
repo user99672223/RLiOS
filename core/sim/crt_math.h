@@ -5,7 +5,9 @@
 
 namespace rlios::sim {
 
+// Bit-exact for |x| <= pi/4 (float). Outside that range the result is NOT guaranteed exact.
 float crtSinf(float x);
 float crtCosf(float x);
+bool crtTrigInRange(float x);
 
 } // namespace rlios::sim

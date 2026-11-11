@@ -488,6 +488,21 @@ static void run_commands(void) {
         for (int k = 0; k < 16; k++) fprintf(out, " %02x", p[i + k]);
         fputc('\n', out);
       }
+    } else if (!strcmp(tok[0], "dumpmem") && nt >= 4) {
+      // dumpmem <ptr-hex> <len> <file>: raw bytes -> <out>\<file> (appended; unreadable pages end the dump)
+      u8 *p = (u8 *)strtoull(tok[1], NULL, 16);
+      size_t n = (size_t)strtoull(tok[2], NULL, 0), done = 0;
+      char dp[MAX_PATH];
+      snprintf(dp, sizeof dp, "%s\\%s", g_out, tok[3]);
+      FILE *d = fopen(dp, "ab");
+      while (d && done < n) {
+        size_t c = n - done < 4096 ? n - done : 4096;
+        if (!readable(p + done, c)) break;
+        fwrite(p + done, 1, c, d);
+        done += c;
+      }
+      if (d) fclose(d);
+      fprintf(out, "  dumped %llu of %llu bytes\n", (unsigned long long)done, (unsigned long long)n);
     } else if (!strcmp(tok[0], "watch") && nt >= 5) {
       fprintf(out, "  %s\n", add_watch(tok, nt, 0) ? "ok" : "target not found");
     } else if (!strcmp(tok[0], "watchp") && nt >= 6) {
@@ -569,6 +584,7 @@ static volatile LONG g_ready;
 //   watchp <label> <target> <ptroff> <off> <len>  bytes at (*(target+ptroff))+off, pointer re-read each tick
 //   unwatch                                       clear all
 //   poke <target> <off> <hexbytes>                write memory (scenario setup)
+//   dumpmem <ptr> <len> <file>                    append raw memory to <out>\<file> (collision geometry extraction)
 static struct { char label[32]; u8 *base; int ptroff, off, len; } g_watch[32];
 static int g_nwatch;
 //   recstart <file> <nticks>                    log all watches for exactly n ticks into <out>\<file>, then write <file>.done and clear
