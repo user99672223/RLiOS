@@ -65,10 +65,50 @@ const float kBUToUU = 50.0f; // RVA 0x1B34120
 
 // Floor: Psyonix bounded plane shape (shape type 28, vtable RVA 0x1A0E8B8), local normal +Z,
 // plane constant 0, identity world transform (measured), collision margin 0.
-const Transform kFloorXf{{{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}},
-                         {0.0f, 0.0f, 0.0f}};
-const float kFloorHalfX = bitsFloat(0x42AE5365u); // shape +0x20
-const float kFloorHalfY = bitsFloat(0x42F9096Bu); // shape +0x24
+struct Plane {
+    Transform xf;
+    float halfX; // shape +0x20
+    float halfY; // shape +0x24
+};
+Vec3 v3b(uint32_t x, uint32_t y, uint32_t z) {
+    return {bitsFloat(x), bitsFloat(y), bitsFloat(z)};
+}
+// The six bounded planes of Stadium_P, in Bullet world order (collision objects 0..5), read
+// from the live world (btCollisionObject +0x10 transform; shape +0x20/+0x24 half extents). The
+// ceiling and one side wall carry the rounding noise of the game's rotator conversion, so the
+// bases are given as bit patterns. Back walls, corners, ramps and goals are triangle meshes.
+const Plane kPlanes[kNumPlanes] = {
+    // 0, 1: goal floors behind the goal lines
+    {{{{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}},
+      v3b(0x00000000u, 0xC2DF5C29u, 0x00000000u)},
+     bitsFloat(0x418D8EC9u),
+     bitsFloat(0x410D8EC9u)},
+    {{{{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}},
+      v3b(0x00000000u, 0x42DF5C29u, 0x00000000u)},
+     bitsFloat(0x418D8EC9u),
+     bitsFloat(0x410D8EC9u)},
+    // 2: main floor
+    {{{{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}}, {0.0f, 0.0f, 0.0f}},
+     bitsFloat(0x42AE5365u),
+     bitsFloat(0x42F9096Bu)},
+    // 3: ceiling
+    {{{{v3b(0xBF800000u, 0xB3BBBD2Eu, 0xA809ADECu), v3b(0xB3BBBD2Eu, 0x3F800000u, 0x33BBBD2Eu),
+        v3b(0x9C000000u, 0x33BBBD2Eu, 0xBF800000u)}},
+      v3b(0x00000000u, 0x00000000u, 0x4223D70Au)},
+     bitsFloat(0x42AE5365u),
+     bitsFloat(0x42F9096Bu)},
+    // 4: side wall at -X
+    {{{{{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}}},
+      v3b(0xC2A3D70Au, 0x00000000u, 0x419EB852u)},
+     bitsFloat(0x41C73ABCu),
+     bitsFloat(0x42F9096Bu)},
+    // 5: side wall at +X
+    {{{{v3b(0x34400000u, 0x9CC00000u, 0xBF7FFFFFu), v3b(0x2809ADECu, 0x3F800000u, 0x00000000u),
+        v3b(0x3F7FFFFFu, 0xA809ADEBu, 0x34400000u)}},
+      v3b(0x42A3D70Au, 0x00000000u, 0x419EB852u)},
+     bitsFloat(0x41C73ABCu),
+     bitsFloat(0x42F9096Bu)},
+};
 // Ball-floor manifold m_contactBreakingThreshold (manifold +0x464), measured.
 const float kBreakingThreshold = bitsFloat(0x3D1C0EBDu);
 
@@ -191,12 +231,12 @@ int sortCachedPoints(const Manifold& m, const ContactPoint& pt) {
 }
 
 // btManifoldResult::addContactPoint (stock): cache lookup by local point on A.
-void addContactPoint(Manifold& m, const Transform& ballXf, const Vec3& normal,
-                     const Vec3& pointOnFloor, float depth) {
+void addContactPoint(Manifold& m, const Transform& ballXf, const Transform& planeXf,
+                     const Vec3& normal, const Vec3& pointOnFloor, float depth) {
     ContactPoint pt;
     const Vec3 pointA = pointOnFloor + normal * depth;
     pt.localA = invXform(ballXf, pointA);
-    pt.localB = invXform(kFloorXf, pointOnFloor);
+    pt.localB = invXform(planeXf, pointOnFloor);
     pt.worldA = pointA;
     pt.worldB = pointOnFloor;
     pt.normal = normal;
@@ -223,11 +263,11 @@ void addContactPoint(Manifold& m, const Transform& ballXf, const Vec3& normal,
 }
 
 // btPersistentManifold::refreshContactPoints (RVA 0x2AC480, stock).
-void refreshContactPoints(Manifold& m, const Transform& ballXf) {
+void refreshContactPoints(Manifold& m, const Transform& ballXf, const Transform& planeXf) {
     for (int i = m.count - 1; i >= 0; --i) {
         ContactPoint& p = m.pts[i];
         p.worldA = xform(ballXf, p.localA);
-        p.worldB = xform(kFloorXf, p.localB);
+        p.worldB = xform(planeXf, p.localB);
         p.distance = dot(p.worldA - p.worldB, p.normal);
     }
     for (int i = m.count - 1; i >= 0; --i) {
@@ -251,9 +291,10 @@ void refreshContactPoints(Manifold& m, const Transform& ballXf) {
 
 // Convex vs Psyonix bounded plane, processCollision (RVA 0x2942B0). The sphere takes the
 // single-contact path (the perturbation loop only runs for polyhedral shapes, type < 7).
-void collideFloor(BallWorld& w) {
+void collidePlane(BallWorld& w, int index) {
     const Transform& cv = w.ball.xf;
-    const Transform& pl = kFloorXf;
+    const Transform& pl = kPlanes[index].xf;
+    Manifold& manifold = w.manifolds[index];
 
     // Direction of -planeNormal in ball space. The plane normal is the literal (0, 0, 1), which
     // the compiler folded into "(m0 * 0 + m1 * 0) - m2 * 1".
@@ -281,18 +322,18 @@ void collideFloor(BallWorld& w) {
     // Psyonix: the plane is bounded. No contact if the gap reaches the breaking threshold or the
     // point is outside the (threshold-inflated) rectangle.
     const float thr = kBreakingThreshold;
-    const float limX = thr + kFloorHalfX;
-    const float limY = thr + kFloorHalfY;
+    const float limX = thr + kPlanes[index].halfX;
+    const float limY = thr + kPlanes[index].halfY;
     const bool miss = thr <= dist || vp.x < -limX || vp.y < -limY || limX < vp.x || limY < vp.y;
     if (!miss) {
         const Vec3 normal = {pl.basis.r[0].y * 0.0f + pl.basis.r[0].x * 0.0f + pl.basis.r[0].z,
                              pl.basis.r[1].y * 0.0f + pl.basis.r[1].x * 0.0f + pl.basis.r[1].z,
                              pl.basis.r[2].y * 0.0f + pl.basis.r[2].x * 0.0f + pl.basis.r[2].z};
         const Vec3 onFloor = xform(pl, Vec3{vp.x, vp.y, 0.0f});
-        addContactPoint(w.floor, cv, normal, onFloor, dist);
+        addContactPoint(manifold, cv, pl, normal, onFloor, dist);
     }
-    if (w.floor.count != 0)
-        refreshContactPoints(w.floor, cv);
+    if (manifold.count != 0)
+        refreshContactPoints(manifold, cv, pl);
 }
 
 // ---- constraint solver -----------------------------------------------------------------------
@@ -486,23 +527,26 @@ void solve(BallWorld& w, const Vec3& totalForce) {
     // split-impulse (penetration recovery) pass. For the velocity pass, the points of a body are
     // accumulated (count, normal, friction, restitution, |rel_pos|) at body+0x250.. and replaced
     // by ONE averaged contact with distance 0 (convertContactSpecial, RVA 0x2B21C0).
-    Row contacts[5];
+    Row contacts[4 * kNumPlanes + 1];
     int numContacts = 0;
     int specialCount = 0;
     Vec3 normalSum = {0.0f, 0.0f, 0.0f};
     float frictionSum = 0.0f;
     float restitutionSum = 0.0f;
     float distSum = 0.0f;
-    for (int i = 0; i < w.floor.count; ++i) {
-        const ContactPoint& p = w.floor.pts[i];
-        const Vec3 relPos = p.worldA - b.xf.origin;
-        setupContactRow(contacts[numContacts++], b, sb, relPos, p.normal, p.distance,
-                        kBallRestitution, kBallFriction, true);
-        ++specialCount;
-        frictionSum = frictionSum + kBallFriction;
-        restitutionSum = restitutionSum + kBallRestitution;
-        normalSum = normalSum + p.normal;
-        distSum = distSum + sqrtF(relPos.y * relPos.y + relPos.x * relPos.x + relPos.z * relPos.z);
+    for (int mi = 0; mi < kNumPlanes; ++mi) {
+        for (int i = 0; i < w.manifolds[mi].count; ++i) {
+            const ContactPoint& p = w.manifolds[mi].pts[i];
+            const Vec3 relPos = p.worldA - b.xf.origin;
+            setupContactRow(contacts[numContacts++], b, sb, relPos, p.normal, p.distance,
+                            kBallRestitution, kBallFriction, true);
+            ++specialCount;
+            frictionSum = frictionSum + kBallFriction;
+            restitutionSum = restitutionSum + kBallRestitution;
+            normalSum = normalSum + p.normal;
+            distSum =
+                distSum + sqrtF(relPos.y * relPos.y + relPos.x * relPos.x + relPos.z * relPos.z);
+        }
     }
 
     Row frictionRow{};
@@ -610,7 +654,8 @@ void worldStep(BallWorld& w) {
     // trigger when the ball's centre itself crosses a surface within one tick; not modelled.
 
     // performDiscreteCollisionDetection (RVA 0x279850).
-    collideFloor(w);
+    for (int i = 0; i < kNumPlanes; ++i)
+        collidePlane(w, i);
 
     // Simulation islands (RVA 0x2B1890, stock btSimulationIslandManager::buildIslands): the ball
     // is alone in its island (the floor is static).
@@ -683,9 +728,8 @@ void initBallWorld(BallWorld& w, const Transform& xf, const Vec3& linVel, const 
     w.ball.invInertiaWorld = ballInvInertiaWorld(xf.basis);
     w.ball.activation = kActive;
     w.ball.deactivationTime = 0.0f;
-    w.floor.count = 0;
-    for (ContactPoint& p : w.floor.pts)
-        p = ContactPoint{};
+    for (Manifold& m : w.manifolds)
+        m = Manifold{};
     w.tick = 0;
 }
 

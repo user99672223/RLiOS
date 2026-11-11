@@ -1,6 +1,7 @@
-// Ball on the DFH Stadium floor: the part of Rocket League's physics tick needed for milestone 3.
-// One sphere rigid body, the floor's bounded plane, the game's per-tick state quantization, and
-// Psyonix's modified Bullet contact solver. See ball_world.cpp for the evidence behind each step.
+// Ball in DFH Stadium (planes only so far): the part of Rocket League's physics tick needed for the
+// ball. One sphere rigid body, the floor's bounded plane, the game's per-tick state quantization,
+// and Psyonix's modified Bullet contact solver. See ball_world.cpp for the evidence behind each
+// step.
 #pragma once
 
 #include "sim/rb_state.h"
@@ -44,9 +45,12 @@ struct Manifold {
     ContactPoint pts[4];
 };
 
+// Stadium_P bounded planes: 2 goal floors, floor, ceiling, 2 side walls.
+inline constexpr int kNumPlanes = 6;
+
 struct BallWorld {
     BallBody ball;
-    Manifold floor;
+    Manifold manifolds[kNumPlanes]; // one per plane, Bullet world object order
     uint64_t tick;
 };
 

@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
         if (static_cast<long>(k) < trace) {
             std::printf("tick %zu z %.9g vz %.9g act %d contacts %d%s\n", k + 1,
                         static_cast<double>(b.xf.origin.z), static_cast<double>(b.linVel.z),
-                        b.activation, w.floor.count, bad ? "  DIVERGED" : "");
+                        b.activation, w.manifolds[2].count, bad ? "  DIVERGED" : "");
         }
         if (bad) {
             if (divergingTicks == 0)
