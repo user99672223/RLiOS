@@ -1,22 +1,37 @@
-// The transcendental functions the physics path calls, reproduced so every platform returns the
-// bits the Windows game computes. The game imports sinf/cosf from the Microsoft UCRT
-// (api-ms-win-crt-math-l1-1-0.dll); libm must never be used for these in sim/.
+// The math functions the physics path may call, reproduced so every platform returns the bits the
+// Windows game computes. The game imports them from the Microsoft UCRT (api-ms-win-crt-math-l1-1-0
+// -> its app-local ucrtbase.dll 10.0.26100.2454, FMA3 code path); libm must never be used for these
+// in sim/. Every function is a port of the DLL's FMA3 code path and is proven bit-exact against the
+// real DLL by tools/harness/ucrt_check.sh (1-argument functions: all 2^32 inputs; 2-argument
+// functions: structured exponent/special sweep plus >= 10^9 random pairs). NaN results reproduce
+// the DLL's bits too (quieted inputs, default NaN 0xFFC00000).
 #pragma once
+
+#include <cstdint>
 
 namespace rlios::sim {
 
-// Bit-exact for |x| <= pi/4 (float). Outside that range the result is NOT guaranteed exact.
 float crtSinf(float x);
 float crtCosf(float x);
-bool crtTrigInRange(float x);
+bool crtTrigInRange(float x); // |x| <= pi/4 (no reduction needed); every input is exact anyway
 
-// NOT exact yet: the UCRT atan2f (reached only from btClampNormal, when a contact normal is
-// clamped at a convex mesh edge) is not ported; this forwards to libm.
+float crtTanf(float x);
+float crtAsinf(float x);
+float crtAcosf(float x);
+float crtAtanf(float x);
 float crtAtan2f(float y, float x);
+float crtExpf(float x);
+float crtLogf(float x);
+float crtPowf(float x, float y);
+float crtFmodf(float x, float y);
+float crtFloorf(float x);
+float crtCeilf(float x);
+float crtSqrtf(float x);
 
-// Number of calls so far that left the proven-exact range (sinf/cosf beyond pi/4, any atan2f).
-// Diagnostic only, never read by the sim. The exactness harness reports it, so a scenario that
-// passes with a non-zero count is known to have touched an unproven path.
+// Number of calls that took a path NOT proven bit-exact. Always 0 now that every function is
+// ported; kept so harnesses (ball_harness) can report/assert it. Diagnostic only, never read by
+// the sim.
 unsigned long long crtInexactCalls();
+
 
 } // namespace rlios::sim
