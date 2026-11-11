@@ -21,7 +21,8 @@ function(rlios_core_flags tgt)
   endif()
 endfunction()
 
-add_library(rlios_sim STATIC core/sim/placeholder_sim.cpp)
+add_library(rlios_sim STATIC core/sim/placeholder_sim.cpp core/sim/ball_world.cpp
+  core/sim/rb_state.cpp core/sim/crt_math.cpp)
 add_library(rlios_game STATIC core/game/session.cpp core/game/scenario.cpp)
 add_library(rlios_net STATIC core/net/net.cpp)
 add_library(rlios_ui STATIC core/ui/ui.cpp)
@@ -62,3 +63,18 @@ rlios_core_flags(test_api_smoke)
 target_link_libraries(test_api_smoke PRIVATE rlios_api)
 add_test(NAME cli_runs COMMAND rlios_sim_cli --scenario ${CMAKE_SOURCE_DIR}/core/tests/scenarios/basic.scn
   --out ${CMAKE_BINARY_DIR}/basic.dump)
+
+# Exactness harness (CLAUDE.md section 9). Reference recordings of the real game are never
+# committed: point RLIOS_REFERENCE_DIR at them. Tests report "skipped" where they are absent (CI).
+add_executable(ball_harness tools/harness/ball_harness.cpp)
+rlios_core_flags(ball_harness)
+target_link_libraries(ball_harness PRIVATE rlios_sim)
+if(DEFINED ENV{RLIOS_REFERENCE_DIR})
+  set(RLIOS_REFERENCE_DIR "$ENV{RLIOS_REFERENCE_DIR}" CACHE PATH "Reference recordings")
+else()
+  set(RLIOS_REFERENCE_DIR "${CMAKE_SOURCE_DIR}/../work/reference" CACHE PATH "Reference recordings")
+endif()
+foreach(scn ball_drop_500uu)
+  add_test(NAME exact_${scn} COMMAND ball_harness ${RLIOS_REFERENCE_DIR}/${scn})
+  set_tests_properties(exact_${scn} PROPERTIES SKIP_RETURN_CODE 77)
+endforeach()

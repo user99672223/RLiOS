@@ -3,22 +3,11 @@
 // later milestones and must trace to evidence (see ../CLAUDE.md section 1).
 #pragma once
 
+#include "sim/vec.h"
+
 #include <cstdint>
-#include <cstring>
 
 namespace rlios::sim {
-
-inline uint32_t floatBits(float f) {
-    uint32_t u;
-    std::memcpy(&u, &f, sizeof(u));
-    return u;
-}
-
-inline float bitsFloat(uint32_t u) {
-    float f;
-    std::memcpy(&f, &u, sizeof(f));
-    return f;
-}
 
 struct State {
     float x;
