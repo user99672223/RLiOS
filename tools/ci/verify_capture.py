@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Verify the offscreen capture PNG: size 2560x1440, exact clear color in the corners, and some
-non-clear pixels (the sim point and bounds outline were actually drawn). Pure stdlib."""
+"""Verify the offscreen capture PNG: size 2560x1440, a rendered scene on top of the clear/sky colour (not
+uniform), diagnostics ok; with --expect-pack also that the real asset pack was loaded. Pure stdlib.
+Usage: verify_capture.py <capture.png> [diagnostics.json [--expect-pack]]"""
 import json
 import struct
 import sys
@@ -60,19 +61,21 @@ def main():
     def px(x, y):
         return tuple(rows[y][x * bpp:x * bpp + 3])
 
-    for (x, y) in [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3), (w // 2, 3)]:
-        got = px(x, y)
-        print(f"pixel({x},{y}) = {got}")
-        assert all(abs(g - c) <= 1 for g, c in zip(got, CLEAR)), f"corner not clear color: {got}"
-    non_clear = sum(
-        1 for y in range(0, h, 4) for x in range(0, w, 4)
-        if any(abs(g - c) > 8 for g, c in zip(px(x, y), CLEAR)))
-    print(f"non-clear samples (every 4th px): {non_clear}")
-    assert non_clear > 200, "nothing drawn on top of the clear color"
+    samples = [px(x, y) for y in range(0, h, 8) for x in range(0, w, 8)]
+    sky = sum(1 for p in samples if all(abs(g - c) <= 2 for g, c in zip(p, CLEAR)))
+    distinct = len(set(samples))
+    print(f"samples {len(samples)}: sky/clear {sky}, distinct colours {distinct}")
+    assert sky < len(samples) * 0.9, "almost nothing drawn over the clear colour"
+    assert distinct > 200, "image too uniform to be a rendered scene"
     if len(sys.argv) > 2:
         d = json.load(open(sys.argv[2]))
-        print("diagnostics ok:", d.get("ok"), "tick:", d.get("sim_tick"), "hash:", d.get("state_hash"))
+        scene = d.get("scene", {})
+        print("diagnostics ok:", d.get("ok"), "tick:", d.get("sim_tick"), "scene:", scene)
         assert d.get("ok") is True and d.get("exit_code") == 0
+        if len(sys.argv) > 3 and sys.argv[3] == "--expect-pack":
+            assert scene.get("real_pack") is True, "asset pack was provided but not loaded"
+            assert scene.get("instances", 0) > 400, "too few instances from the pack"
+            assert distinct > 2000, "real arena should be far more detailed"
     print("capture verification PASSED")
 
 

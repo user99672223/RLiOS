@@ -1,0 +1,4 @@
+# Encrypted asset pack for CI (tools/convert/publish_pack.sh). Chunks are release assets of the tag.
+tag assetpack-v1
+pack_manifest_sha256 0829ce27733c6ec8ba1a0f17fda35f851f7ce79dc057c3ea0341b93da4e0191c
+chunk 41d72f611e1b1663678e09d6fe311702bee0ada9265e2df916cdab2c88be3c7d assetpack.tar.gz.age.part00

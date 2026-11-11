@@ -38,6 +38,17 @@ typedef struct {
     uint64_t frames;
 } RliosFrameStats;
 
+typedef struct {
+    uint32_t real_pack;    /* 1: scene came from the asset pack; 0: built-in placeholder arena */
+    uint32_t instances;    /* placed mesh instances */
+    uint32_t draws;        /* draw calls per frame (instance sections that are drawn) */
+    uint64_t triangles;    /* triangles per frame */
+    uint32_t textures;     /* textures in the scene */
+    uint32_t textures_gpu; /* textures uploaded to the GPU (others use their average colour) */
+    uint32_t astc_supported;
+    char status[256]; /* loader status line */
+} RliosSceneInfo;
+
 /* Monotonic clock in ns (the clock the sim thread uses). */
 uint64_t rlios_now_ns(void);
 
@@ -61,6 +72,15 @@ int rlios_renderer_draw_layer(RliosRenderer* r, void* ca_metal_layer, uint32_t w
 /* Render offscreen (w x h BGRA8) and optionally write a PNG (png_path may be NULL). */
 int rlios_renderer_capture(RliosRenderer* r, const RliosRenderState* rs, uint32_t w, uint32_t h,
                            const char* png_path, RliosFrameStats* stats);
+
+/* Load the scene from an asset pack directory (manifest.txt inside). Falls back to the placeholder
+   arena (also used until this is called). Returns 1 if the real pack was loaded. Not mid-match. */
+int rlios_renderer_load_scene(RliosRenderer* r, const char* pack_dir);
+void rlios_renderer_scene_info(const RliosRenderer* r, RliosSceneInfo* out);
+/* Fixed camera shots for captures; -1 (default) = slow orbit driven by the sim tick. */
+uint32_t rlios_renderer_shot_count(void);
+const char* rlios_renderer_shot_name(uint32_t shot);
+void rlios_renderer_set_shot(RliosRenderer* r, int32_t shot);
 
 #ifdef __cplusplus
 }

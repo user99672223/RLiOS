@@ -1,8 +1,9 @@
 import UIKit
 
 /// Headless automation via launch arguments (CLAUDE.md section 10, "Automation mode").
-///   --capture <dir>   render the external-display view offscreen at 2560x1440, write
-///                     <Documents>/<dir>/capture.png and diagnostics.json, exit 0
+///   --capture <dir>   load <Documents>/assetpack (placeholder arena if absent), render the
+///                     external-display view offscreen at 2560x1440 from each fixed camera shot:
+///                     <Documents>/<dir>/capture.png (shot 0), shot_<name>.png, diagnostics.json
 ///   --soak <seconds>  run sim + render for that long; exit 0 if healthy, 1 otherwise
 ///   --scenario/--flow not implemented yet: exit 2
 enum Automation {
@@ -73,6 +74,8 @@ enum Automation {
             return 1
         }
         defer { rlios_renderer_destroy(renderer) }
+        let realPack = AssetPack.load(into: renderer)
+        result["scene"] = AssetPack.info(renderer)
         var cfg = RliosConfig(manual_stepping: 1, max_catch_up_ticks: 0)
         guard let sim = rlios_create(&cfg) else { return 1 }
         defer { rlios_destroy(sim) }
@@ -83,9 +86,25 @@ enum Automation {
         var rs = RliosRenderState()
         _ = rlios_get_render_state(sim, rlios_now_ns(), &rs)
         var stats = RliosFrameStats()
-        let ok = pngURL.path.withCString {
+        rlios_renderer_set_shot(renderer, 0)
+        var ok = pngURL.path.withCString {
             rlios_renderer_capture(renderer, &rs, UInt32(width), UInt32(height), $0, &stats)
         }
+        var shots: [[String: Any]] = []
+        for i in 0..<rlios_renderer_shot_count() {
+            let name = String(cString: rlios_renderer_shot_name(i))
+            let url = out.appendingPathComponent("shot_\(name).png")
+            rlios_renderer_set_shot(renderer, Int32(i))
+            var st = RliosFrameStats()
+            let r = url.path.withCString {
+                rlios_renderer_capture(renderer, &rs, UInt32(width), UInt32(height), $0, &st)
+            }
+            if r != 1 { ok = 0 }
+            shots.append(["name": name, "png": url.lastPathComponent, "ok": r == 1, "gpu_ms": st.gpu_ms])
+        }
+        rlios_renderer_set_shot(renderer, -1)
+        result["shots"] = shots
+        result["real_pack"] = realPack
         var d = RliosDiagnostics()
         rlios_get_diagnostics(sim, &d)
         result["ok"] = ok == 1
@@ -114,6 +133,8 @@ enum Automation {
             return 1
         }
         defer { rlios_renderer_destroy(renderer) }
+        AssetPack.load(into: renderer)
+        result["scene"] = AssetPack.info(renderer)
         var cfg = RliosConfig(manual_stepping: 0, max_catch_up_ticks: 0)
         guard let sim = rlios_create(&cfg), rlios_start(sim) == 1 else { return 1 }
         defer { rlios_destroy(sim) }

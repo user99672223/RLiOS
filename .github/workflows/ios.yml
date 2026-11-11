@@ -26,11 +26,27 @@ jobs:
           xcodebuild build -project app/RLiOS.xcodeproj -scheme RLiOS -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build ARCHS=arm64 ONLY_ACTIVE_ARCH=NO | tee build.log | tail -40
-      - name: Encrypted asset pack (stub)
+      # Encrypted real asset pack (CLAUDE.md section 10): chunks cached encrypted; decrypted only into the
+      # runner temp dir and the Simulator app container, deleted after the run, never uploaded.
+      - name: Cache encrypted asset pack
         if: env.ASSETPACK_KEY != ''
-        run: echo "Asset pack download/decrypt not implemented yet (no assets exist)."
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/assetpack_enc
+          key: assetpack-${{ hashFiles('tools/ci/assetpack.txt') }}
+      - name: Decrypt asset pack
+        if: env.ASSETPACK_KEY != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          brew install age
+          tools/ci/fetch_assetpack.sh "$RUNNER_TEMP/assetpack_enc" "$RUNNER_TEMP/assetpack_dec"
+          echo "ASSETPACK_DIR=$RUNNER_TEMP/assetpack_dec/assetpack" >> "$GITHUB_ENV"
       - name: Run in Simulator (capture, phone screenshot, soak)
         run: tools/ci/sim_run.sh build/Build/Products/Debug-iphonesimulator/RLiOS.app out
+      - name: Delete decrypted asset pack
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/assetpack_dec"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

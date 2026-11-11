@@ -86,6 +86,7 @@ final class PhoneViewController: UIViewController {
         lines.append(
             String(
                 format: "frame: %.0f fps  cpu %.2f ms  gpu %.2f ms", fps, host.cpuMs, host.gpuMs))
+        lines.append(host.sceneSummary)
         lines.append("mem: \(mem)")
         lines.append("thermal: \(SystemDiagnostics.thermalName())")
         lines.append("--- log ---")

@@ -14,6 +14,7 @@ final class GameHost {
     private(set) var frames: UInt64 = 0
     private(set) var cpuMs: Double = 0
     private(set) var gpuMs: Double = 0
+    private(set) var sceneSummary = "scene: none"
 
     var hasExternalDisplay: Bool { externalCount > 0 }
 
@@ -24,6 +25,11 @@ final class GameHost {
         renderer = rlios_renderer_create()
         if sim == nil { Log.info("sim create failed") }
         if renderer == nil { Log.info("Metal renderer unavailable") }
+        if let r = renderer {
+            let real = AssetPack.load(into: r)
+            sceneSummary = AssetPack.summary(r)
+            Log.info(real ? "asset pack loaded" : "no asset pack: placeholder arena")
+        }
         if sim != nil, rlios_start(sim) == 1 { Log.info("sim thread started (120 Hz)") }
     }
 
