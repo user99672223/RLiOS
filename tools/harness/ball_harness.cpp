@@ -169,8 +169,8 @@ int main(int argc, char** argv) {
                                      parseNumber(t[3 + static_cast<size_t>(i) * 3]),
                                      parseNumber(t[4 + static_cast<size_t>(i) * 3])};
             } else if (t[1] == "quat" && t.size() >= 6) {
-                xf.basis = setRotation(
-                    Quat{parseNumber(t[2]), parseNumber(t[3]), parseNumber(t[4]), parseNumber(t[5])});
+                xf.basis = setRotation(Quat{parseNumber(t[2]), parseNumber(t[3]), parseNumber(t[4]),
+                                            parseNumber(t[5])});
             } else if (t[1] == "inertia" && t.size() >= 11) {
                 for (int i = 0; i < 3; ++i)
                     inertia.r[i] = {parseNumber(t[2 + static_cast<size_t>(i) * 3]),

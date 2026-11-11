@@ -31,10 +31,10 @@ struct ArenaMesh {
     Transform xf; // world transform of the collision object
     Vec3 bvhMin, bvhMax, bvhQuant;
     int32_t numTriangles, numVertices, numNodes;
-    const uint32_t* indices;  // 3 per triangle
-    const float* vertices;    // 3 per vertex, mesh space
-    const BvhNode* nodes;     // depth-first order, as built by the game
-    const MeshTriInfo* info;  // one per triangle
+    const uint32_t* indices; // 3 per triangle
+    const float* vertices;   // 3 per vertex, mesh space
+    const BvhNode* nodes;    // depth-first order, as built by the game
+    const MeshTriInfo* info; // one per triangle
 };
 
 inline constexpr int kMaxArenaMeshes = 16;
