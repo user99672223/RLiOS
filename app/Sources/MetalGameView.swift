@@ -13,7 +13,7 @@ final class MetalGameView: UIView {
 
     func startRendering() {
         guard link == nil else { return }
-        let l = CADisplayLink(target: self, selector: #selector(frame))
+        let l = CADisplayLink(target: self, selector: #selector(drawFrame))
         l.preferredFramesPerSecond = 60
         l.add(to: .main, forMode: .common)
         link = l
@@ -24,7 +24,7 @@ final class MetalGameView: UIView {
         link = nil
     }
 
-    @objc private func frame() {
+    @objc private func drawFrame() {
         let size: CGSize
         if let fixed = fixedDrawableSize {
             size = fixed
