@@ -1,0 +1,68 @@
+# Xcode project is generated in CI (and locally on a Mac) with: xcodegen generate --spec app/project.yml
+# The generated project is never committed.
+name: RLiOS
+options:
+  bundleIdPrefix: com.rlios
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    # Single place to change the bundle id (e.g. for personal-team signing later).
+    RLIOS_BUNDLE_ID: com.rlios.app
+    SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: c++20
+    CLANG_ENABLE_OBJC_ARC: YES
+    # Exactness rules (CLAUDE.md section 5): applies to sim/ and game/ (and everything else here).
+    OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "-ffp-contract=off", "-fno-fast-math"]
+    HEADER_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/../core"]
+    SWIFT_OBJC_BRIDGING_HEADER: Sources/RLiOS-Bridging-Header.h
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  RLiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../core/api
+      - path: ../core/sim
+      - path: ../core/game
+      - path: ../core/net
+      - path: ../core/ui
+      - path: ../core/audio
+      - path: ../core/io
+      - path: ../core/render
+        excludes:
+          - "stub/**"
+    entitlements:
+      path: RLiOS.entitlements
+      properties:
+        # Takes effect on device only (no effect in the Simulator, and requires a signing
+        # identity that grants it).
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: RLiOS
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortrait]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Phone
+            UIWindowSceneSessionRoleExternalDisplayNonInteractive:
+              - UISceneConfigurationName: External
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(RLIOS_BUNDLE_ID)
+        PRODUCT_NAME: RLiOS
+        GENERATE_INFOPLIST_FILE: NO

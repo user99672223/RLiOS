@@ -1,0 +1,64 @@
+name: core
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ binutils python3-pip pipx
+          pipx install clang-format==19.1.7
+      - name: Format check
+        if: matrix.arch == 'x86_64'
+        run: |
+          find core -name '*.cpp' -o -name '*.h' -o -name '*.mm' | xargs clang-format --dry-run -Werror
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: No-FMA check (arm64 objects)
+        if: matrix.arch == 'aarch64'
+        run: |
+          tools/check_no_fma.sh --selftest
+          tools/check_no_fma.sh build
+      - name: Determinism dump
+        run: |
+          mkdir -p dumps
+          build/rlios_sim_cli --scenario core/tests/scenarios/basic.scn --out dumps/${{ matrix.arch }}.txt
+          tail -1 dumps/${{ matrix.arch }}.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dump-${{ matrix.arch }}
+          path: dumps/${{ matrix.arch }}.txt
+
+  agree:
+    needs: build-test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dump-*
+          merge-multiple: true
+          path: dumps
+      - name: x86-64 vs arm64 per-tick state dumps must be byte-identical
+        run: |
+          ls -l dumps
+          wc -l dumps/*.txt
+          cmp dumps/x86_64.txt dumps/aarch64.txt
+          echo "IDENTICAL: $(tail -1 dumps/x86_64.txt)"

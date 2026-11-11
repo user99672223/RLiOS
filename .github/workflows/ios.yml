@@ -1,0 +1,72 @@
+name: ios
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  simulator:
+    runs-on: macos-15
+    env:
+      ASSETPACK_KEY: ${{ secrets.ASSETPACK_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun simctl list runtimes
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec app/project.yml
+      - name: Build for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build -project app/RLiOS.xcodeproj -scheme RLiOS -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build ARCHS=arm64 ONLY_ACTIVE_ARCH=NO | tee build.log | tail -40
+      - name: Encrypted asset pack (stub)
+        if: env.ASSETPACK_KEY != ''
+        run: echo "Asset pack download/decrypt not implemented yet (no assets exist)."
+      - name: Run in Simulator (capture, phone screenshot, soak)
+        run: tools/ci/sim_run.sh build/Build/Products/Debug-iphonesimulator/RLiOS.app out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-output
+          path: |
+            out/
+            build.log
+
+  device-ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec app/project.yml
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild build -project app/RLiOS.xcodeproj -scheme RLiOS -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee build.log | tail -40
+      - name: Package unsigned ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/RLiOS.app Payload/
+          zip -qr RLiOS-unsigned.ipa Payload
+          ls -l RLiOS-unsigned.ipa
+          unzip -l RLiOS-unsigned.ipa | grep -E 'default.metallib|Info.plist|RLiOS$' || true
+          lipo -info Payload/RLiOS.app/RLiOS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RLiOS-unsigned-ipa
+          path: RLiOS-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: device-build-log
+          path: build.log

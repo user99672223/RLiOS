@@ -1,0 +1,36 @@
+# Safety net: never commit game files, extracted assets, or reverse-engineering output.
+work/
+assets/
+assetpack/
+assets_raw/
+*.upk
+*.udk
+*.tfc
+*.bik
+*.swf
+*.bnk
+*.wem
+*.pak
+*.gpr
+*.rep
+*.gzf
+*.log
+*.enc
+*.age
+*.ipa
+# Build output
+build/
+build-*/
+cmake-build-*/
+DerivedData/
+Payload/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+.DS_Store
+# Simulation dumps / reference logs
+*.dump
+reference/
+captures/
+ci-artifacts/
+app/Generated/
