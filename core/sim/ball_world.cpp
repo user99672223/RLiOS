@@ -111,6 +111,7 @@ const Plane kPlanes[kNumPlanes] = {
 };
 // Ball-floor manifold m_contactBreakingThreshold (manifold +0x464), measured.
 const float kBreakingThreshold = bitsFloat(0x3D1C0EBDu);
+const float kSphereAabbMargin = bitsFloat(0x3D23D70Au); // 0.04f, RVA 0x1A0E388
 
 // btContactSolverInfo, measured from the world (world+0x108 solver, info block in the world).
 const int kNumIterations = 10;
@@ -233,7 +234,7 @@ int sortCachedPoints(const Manifold& m, const ContactPoint& pt) {
 // btManifoldResult::addContactPoint (stock): cache lookup by local point on A. Returns the index
 // of the manifold point that now holds the contact.
 int addContactPoint(Manifold& m, const Transform& ballXf, const Transform& planeXf,
-                     const Vec3& normal, const Vec3& pointOnFloor, float depth) {
+                    const Vec3& normal, const Vec3& pointOnFloor, float depth) {
     ContactPoint pt;
     const Vec3 pointA = pointOnFloor + normal * depth;
     pt.localA = invXform(ballXf, pointA);
@@ -345,8 +346,12 @@ void collideMesh(BallWorld& w, int meshIndex) {
     // space. The extra collision margin added to it is the mesh's, which is 0 (measured).
     const Transform inMesh = inverse(mesh.xf);
     const Vec3 c = xform(inMesh, cv.origin);
-    const Vec3 aabbMin = {c.x - kBallRadius, c.y - kBallRadius, c.z - kBallRadius};
-    const Vec3 aabbMax = {c.x + kBallRadius, c.y + kBallRadius, c.z + kBallRadius};
+    // The ball shape's getAabb (vtable RVA 0x1A0D730 slot 1 = RVA 0x2A56F0) is not stock: the
+    // extent is the radius plus the float 0.04 (RVA 0x1A0E388) added twice, so triangles up to
+    // 0.08 beyond the sphere are still tested.
+    const float extent = (kBallRadius + kSphereAabbMargin) + kSphereAabbMargin;
+    const Vec3 aabbMin = {c.x - extent, c.y - extent, c.z - extent};
+    const Vec3 aabbMax = {extent + c.x, extent + c.y, extent + c.z};
 
     forEachOverlappingLeaf(mesh, aabbMin, aabbMax, [&](int32_t tri) {
         Vec3 v[3];
