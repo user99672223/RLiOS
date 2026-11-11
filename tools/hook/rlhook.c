@@ -674,6 +674,68 @@ static int hook_tick(void) {
   return 1;
 }
 
+
+// ---- AES key capture: detour AESDecrypt(data, size, key256) (RVA 0x2DB210 in build 2026-10-31, found by signature) ----
+typedef void (*aes_fn)(u8 *data, u32 size, const u8 *key);
+static aes_fn g_aes_orig;
+static u8 g_keys[16][32];
+static int g_nkeys;
+static CRITICAL_SECTION g_aes_cs;
+static void aes_detour(u8 *data, u32 size, const u8 *key) {
+  u8 first[16] = {0};
+  if (size >= 16) memcpy(first, data, 16);
+  g_aes_orig(data, size, key);
+  EnterCriticalSection(&g_aes_cs);
+  int known = 0;
+  for (int i = 0; i < g_nkeys; i++)
+    if (!memcmp(g_keys[i], key, 32)) known = 1;
+  static int logged;
+  if (!known || logged < 64) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s\\aes_keys.txt", g_out);
+    FILE *f = fopen(path, "ab");
+    if (f) {
+      fprintf(f, "%s key=", known ? "call" : "NEWKEY");
+      for (int k = 0; k < 32; k++) fprintf(f, "%02x", key[k]);
+      fprintf(f, " size=%u in=", size);
+      for (int k = 0; k < 16; k++) fprintf(f, "%02x", first[k]);
+      fprintf(f, " out=");
+      for (int k = 0; k < 16 && k < (int)size; k++) fprintf(f, "%02x", data[k]);
+      fputc('\n', f);
+      fclose(f);
+    }
+    logged++;
+    if (!known && g_nkeys < 16) memcpy(g_keys[g_nkeys++], key, 32);
+  }
+  LeaveCriticalSection(&g_aes_cs);
+}
+static int hook_aes(void) {
+  // 48 89 5C 24 10  55 56 57  48 81 EC 20 01 00 00  48 8B 05 ?? ?? ?? ??  48 33 C4 ... 49 8B D8 8B FA 48 8B F1
+  static const u8 pat[] = {0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57, 0x48, 0x81, 0xEC, 0x20, 0x01, 0x00, 0x00, 0x48, 0x8B, 0x05, 0, 0, 0, 0,
+                           0x48, 0x33, 0xC4, 0x48, 0x89, 0x84, 0x24, 0x10, 0x01, 0x00, 0x00, 0x49, 0x8B, 0xD8, 0x8B, 0xFA, 0x48, 0x8B, 0xF1};
+  static const char mask[] = "xxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxx";
+  u8 *t = sig_scan(pat, mask, sizeof pat);
+  if (!t) {
+    LOG("AESDecrypt signature not found");
+    return 0;
+  }
+  InitializeCriticalSection(&g_aes_cs);
+  u8 *tr = (u8 *)VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+  memcpy(tr, t, 15);
+  tr[15] = 0xFF, tr[16] = 0x25, *(u32 *)(tr + 17) = 0;
+  *(u64 *)(tr + 21) = (u64)(t + 15);
+  g_aes_orig = (aes_fn)tr;
+  u8 patch[15] = {0xFF, 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x90};
+  *(u64 *)(patch + 6) = (u64)aes_detour;
+  DWORD old;
+  VirtualProtect(t, 15, PAGE_EXECUTE_READWRITE, &old);
+  memcpy(t, patch, 15);
+  VirtualProtect(t, 15, old, &old);
+  FlushInstructionCache(GetCurrentProcess(), t, 15);
+  LOG("AESDecrypt at %p (rva %llx) hooked", t, (unsigned long long)(t - g_base));
+  return 1;
+}
+
 static void log_module(const char *name) {
   HMODULE m = GetModuleHandleA(name);
   if (!m) {
@@ -704,6 +766,7 @@ static DWORD WINAPI main_thread(LPVOID arg) {
   g_ticks = fopen(path, "wb");
   if (g_ticks) fprintf(g_ticks, "#n\tself\tphysics_frame_before\tdt_bits\tgravz_bits\tqpc\tthread\n");
   hook_tick();
+  hook_aes();
 
   int ok = 0;
   for (int i = 0; i < 1200 && !ok; i++) {
