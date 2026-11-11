@@ -34,8 +34,8 @@ struct MipLevel {
 
 struct Texture {
     std::string path;
-    uint8_t avg[4] = {128, 128, 128,
-                      255}; // average sRGB colour (fallback when the texture can't be used)
+    // Average sRGB colour (fallback when the texture can't be used).
+    uint8_t avg[4] = {128, 128, 128, 255};
     bool loaded = false;
     TexFormat format = TexFormat::RGBA8_sRGB;
     uint32_t width = 0, height = 0;
@@ -76,8 +76,8 @@ struct Mesh {
 struct Instance {
     uint32_t mesh = 0;
     uint32_t firstSlot = 0; // slots[firstSlot + section] = material index (or -1)
-    float rows[4]
-              [3]; // world = v.x*rows[0] + v.y*rows[1] + v.z*rows[2] + rows[3]  (row vectors, UE3)
+    // world = v.x*rows[0] + v.y*rows[1] + v.z*rows[2] + rows[3]  (row vectors, UE3)
+    float rows[4][3];
     float normalRows[3][3]; // n' = n.x*normalRows[0] + ... (inverse transpose of the linear part)
     uint32_t flags = 0;     // bit0: mirrored (negative determinant)
 };
