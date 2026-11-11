@@ -23,7 +23,8 @@ endfunction()
 
 add_library(rlios_sim STATIC core/sim/placeholder_sim.cpp core/sim/ball_world.cpp
   core/sim/rb_state.cpp core/sim/crt_math.cpp core/sim/arena_mesh.cpp)
-add_library(rlios_game STATIC core/game/session.cpp core/game/scenario.cpp)
+add_library(rlios_game STATIC core/game/session.cpp core/game/scenario.cpp core/game/arena.cpp
+  core/game/match.cpp core/game/stub_physics.cpp core/game/bot.cpp)
 add_library(rlios_net STATIC core/net/net.cpp)
 add_library(rlios_ui STATIC core/ui/ui.cpp)
 add_library(rlios_audio STATIC core/audio/audio.cpp)
@@ -50,9 +51,12 @@ find_package(Threads REQUIRED)
 add_executable(rlios_sim_cli core/tools/sim_cli.cpp)
 rlios_core_flags(rlios_sim_cli)
 target_link_libraries(rlios_sim_cli PRIVATE rlios_game)
+add_executable(rlios_match_cli core/tools/match_cli.cpp)
+rlios_core_flags(rlios_match_cli)
+target_link_libraries(rlios_match_cli PRIVATE rlios_game)
 
 enable_testing()
-foreach(name timestep triple_buffer determinism crt_math ball_exact)
+foreach(name timestep triple_buffer determinism crt_math ball_exact game_rules match_golden)
   add_executable(test_${name} core/tests/test_${name}.cpp)
   rlios_core_flags(test_${name})
   target_link_libraries(test_${name} PRIVATE rlios_game)
