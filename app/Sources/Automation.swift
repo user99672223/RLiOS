@@ -3,7 +3,8 @@ import UIKit
 /// Headless automation via launch arguments (CLAUDE.md section 10, "Automation mode").
 ///   --capture <dir>   render the external-display view offscreen at 2560x1440, write
 ///                     <Documents>/<dir>/capture.png and diagnostics.json, exit 0
-///   --soak <seconds>  run sim + render for that long; exit 0 if healthy, 1 otherwise
+///   --soak <seconds>  run sim + render and back-to-back 3v3 bot matches (core/game rules) for that
+///                     long; exit 0 if healthy, 1 otherwise
 ///   --scenario/--flow not implemented yet: exit 2
 enum Automation {
     private(set) static var active = false
@@ -126,7 +127,42 @@ enum Automation {
         var tickStalls = 0
         var stats = RliosFrameStats()
         var rng: UInt64 = 0x9E37_79B9_7F4A_7C15
+        // Bot-vs-bot soccar matches, stepped 240 ticks (2 s of game time) per frame.
+        var matchSeed: UInt64 = 1
+        var matchCfg = RliosMatchConfig(blue_cars: 3, orange_cars: 3, seed: matchSeed)
+        var match = rlios_match_create(&matchCfg)
+        var matchesDone = 0
+        var matchGoals = 0
+        var matchDemos = 0
+        var matchTicks: UInt64 = 0
+        var matchBad = match == nil
+        var results: [[String: Any]] = []
         while Double(rlios_now_ns() - t0) * 1e-9 < seconds {
+            if let m = match {
+                let ended = rlios_match_step(m, 240)
+                var info = RliosMatchInfo()
+                rlios_match_get_info(m, &info)
+                if !info.ball_x.isFinite || !info.ball_y.isFinite || !info.ball_z.isFinite {
+                    sawNaN = true
+                }
+                if ended == 1 {
+                    matchesDone += 1
+                    matchGoals += Int(info.total_goals)
+                    matchDemos += Int(info.total_demos)
+                    matchTicks += info.tick
+                    if info.winner < 0 || info.score_blue == info.score_orange { matchBad = true }
+                    results.append([
+                        "seed": matchSeed, "score": "\(info.score_blue)-\(info.score_orange)",
+                        "overtime": info.overtime, "ticks": info.tick,
+                        "hash": hex(info.state_hash),
+                    ])
+                    rlios_match_destroy(m)
+                    matchSeed += 1
+                    matchCfg.seed = matchSeed
+                    match = rlios_match_create(&matchCfg)
+                    if match == nil { matchBad = true }
+                }
+            }
             // Random inputs (xorshift) to wander the placeholder sim.
             rng ^= rng << 13
             rng ^= rng >> 7
@@ -151,13 +187,14 @@ enum Automation {
             frames += 1
             usleep(16_000)
         }
+        if let m = match { rlios_match_destroy(m) }
         var d = RliosDiagnostics()
         rlios_get_diagnostics(sim, &d)
         let expected = seconds * 120
         let tickOK = Double(d.tick) >= expected * 0.5
         let footGrowthMB = (Double(SystemDiagnostics.footprintBytes()) - Double(footStart)) / 1_048_576
         let healthy = !sawNaN && tickOK && tickStalls == 0 && footGrowthMB < 64
-            && (result["render_failed"] as? Bool) != true
+            && (result["render_failed"] as? Bool) != true && !matchBad && matchesDone >= 1
         result["ok"] = healthy
         result["exit_code"] = healthy ? 0 : 1
         result["frames"] = frames
@@ -169,6 +206,12 @@ enum Automation {
         result["tick_stalls"] = tickStalls
         result["footprint_growth_mb"] = footGrowthMB
         result["state_hash"] = hex(d.state_hash)
+        result["matches_completed"] = matchesDone
+        result["match_goals"] = matchGoals
+        result["match_demos"] = matchDemos
+        result["match_ticks"] = matchTicks
+        result["match_error"] = matchBad
+        result["matches"] = results
         writeJSON(result, to: jsonURL)
         return healthy ? 0 : 1
     }

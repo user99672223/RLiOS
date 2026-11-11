@@ -23,5 +23,27 @@ int main() {
     CHECK(rlios_start(sim) == 1);
     rlios_stop(sim);
     rlios_destroy(sim);
+
+    // Bot-vs-bot match through the C API: runs to the end, deterministic.
+    RliosMatchConfig mc{2, 2, 2};
+    RliosMatch* m = rlios_match_create(&mc);
+    CHECK(m != nullptr);
+    int ended = 0;
+    for (int i = 0; i < 1000 && !ended; ++i)
+        ended = rlios_match_step(m, 120);
+    CHECK(ended == 1);
+    RliosMatchInfo info{};
+    rlios_match_get_info(m, &info);
+    CHECK(info.phase == 3);
+    CHECK(info.winner == 0 || info.winner == 1);
+    CHECK(info.num_cars == 4);
+    CHECK(info.total_goals == static_cast<uint32_t>(info.score_blue + info.score_orange));
+    RliosCarInfo car{};
+    CHECK(rlios_match_get_car(m, 3, &car) == 1);
+    CHECK(car.team == 1);
+    CHECK(rlios_match_get_car(m, 4, &car) == 0);
+    rlios_match_destroy(m);
+    RliosMatchConfig bad{0, 1, 1};
+    CHECK(rlios_match_create(&bad) == nullptr);
     TEST_MAIN_RETURN();
 }

@@ -59,4 +59,5 @@ python3 - "$OUT/soak/soak.json" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); print("soak:",d)
 assert d["ok"] is True and d["exit_code"]==0, "soak unhealthy"
+assert d.get("matches_completed", 0) >= 1, "soak: no bot-vs-bot match completed"
 PY
