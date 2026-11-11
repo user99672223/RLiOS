@@ -141,7 +141,7 @@ enum Automation {
                     sawNaN = true
                 }
                 if frames % 30 == 0 {
-                    if rs.tick == lastTick { tickStalls += 1 }
+                    if frames > 0 && rs.tick == lastTick { tickStalls += 1 }
                     lastTick = rs.tick
                 }
                 if rlios_renderer_capture(renderer, &rs, 320, 180, nil, &stats) != 1 {
