@@ -34,3 +34,7 @@ reference/
 captures/
 ci-artifacts/
 app/Generated/
+
+# Hook binaries are built into work/hook/bin
+*.dll
+*.exe

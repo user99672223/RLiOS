@@ -1,0 +1,6 @@
+name   ball_drop_500uu
+arena  Stadium_P
+ticks  1680
+ball   pos 0 0 10
+ball   vel 0 0 0
+ball   angvel 0 0 0
