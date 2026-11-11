@@ -1,9 +1,11 @@
-// Ball in DFH Stadium (planes only so far): the part of Rocket League's physics tick needed for the
-// ball. One sphere rigid body, the floor's bounded plane, the game's per-tick state quantization,
-// and Psyonix's modified Bullet contact solver. See ball_world.cpp for the evidence behind each
-// step.
+// Ball in DFH Stadium: the part of Rocket League's physics tick needed for the ball. One sphere
+// rigid body, the arena's six bounded planes (built in) and its triangle meshes (data, optional),
+// the game's per-tick state quantization, and Psyonix's modified Bullet contact solver. See
+// ball_world.cpp for the evidence behind each step.
 #pragma once
 
+#include "sim/arena_mesh.h"
+#include "sim/contact.h"
 #include "sim/rb_state.h"
 #include "sim/vec.h"
 
@@ -29,33 +31,24 @@ struct BallBody {
     float deactivationTime;
 };
 
-// btManifoldPoint, reduced to the fields that influence the simulation.
-struct ContactPoint {
-    Vec3 localA; // on the ball, ball space
-    Vec3 localB; // on the floor, floor space
-    Vec3 worldA;
-    Vec3 worldB;
-    Vec3 normal; // world, on B (floor), pointing at the ball
-    float distance;
-};
-
-// btPersistentManifold (ball = body 0, floor = body 1).
-struct Manifold {
-    int32_t count;
-    ContactPoint pts[4];
-};
-
 // Stadium_P bounded planes: 2 goal floors, floor, ceiling, 2 side walls.
 inline constexpr int kNumPlanes = 6;
 
+inline constexpr int kNumManifolds = kNumPlanes + kMaxArenaMeshes;
+
 struct BallWorld {
     BallBody ball;
-    Manifold manifolds[kNumPlanes]; // one per plane, Bullet world object order
+    // One per static object, Bullet world object order: the planes, then the arena meshes.
+    Manifold manifolds[kNumManifolds];
+    // Triangle meshes of the arena (corners, ramps, goals, back walls). Null: planes only. The
+    // data is extracted from the game and never part of the repo; the caller keeps it alive.
+    const ArenaCollision* arena;
     uint64_t tick;
 };
 
-// Ball at rest pose `xf` with the given velocities, awake, no contacts.
-void initBallWorld(BallWorld& w, const Transform& xf, const Vec3& linVel, const Vec3& angVel);
+// Ball at pose `xf` with the given velocities, awake, no contacts.
+void initBallWorld(BallWorld& w, const Transform& xf, const Vec3& linVel, const Vec3& angVel,
+                   const ArenaCollision* arena = nullptr);
 
 // btRigidBody::updateInertiaTensor for the ball: basis.scaled(invInertiaLocal) * basis^T.
 Mat3 ballInvInertiaWorld(const Mat3& basis);

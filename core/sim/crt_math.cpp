@@ -18,6 +18,7 @@
 
 #include "sim/vec.h"
 
+#include <atomic>
 #include <cmath>
 
 namespace rlios::sim {
@@ -35,6 +36,8 @@ constexpr uint32_t kTiny = 0x39000000u;      // 2^-13
 constexpr uint32_t kSmall = 0x3C000000u;     // 2^-7
 constexpr uint32_t kQuarterPi = 0x3F490FDBu; // pi/4 as float; above it the UCRT reduces the range
 
+std::atomic<unsigned long long> gInexactCalls{0};
+
 } // namespace
 
 bool crtTrigInRange(float x) {
@@ -47,6 +50,7 @@ float crtSinf(float x) {
     if (ax > kQuarterPi) {
         // Range reduction path (RVA 0xAC1D0) is NOT ported. The only caller, integrateTransform,
         // clamps the angle so that |x| <= pi/8; callers must check crtTrigInRange() otherwise.
+        gInexactCalls.fetch_add(1, std::memory_order_relaxed);
         return static_cast<float>(std::sin(xd));
     }
     if (ax < kTiny)
@@ -70,6 +74,7 @@ float crtCosf(float x) {
     const double xd = static_cast<double>(x);
     if (ax > kQuarterPi) {
         // Not ported (RVA 0xA7E00); see crtSinf.
+        gInexactCalls.fetch_add(1, std::memory_order_relaxed);
         return static_cast<float>(std::cos(xd));
     }
     if (ax < kTiny)
@@ -85,6 +90,15 @@ float crtCosf(float x) {
     p = std::fma(p, r, bitsDouble(0xBF56C16C16C16C16ull));
     p = std::fma(p, r, bitsDouble(0x3FA5555555555555ull));
     return static_cast<float>(std::fma(p, r * r, t));
+}
+
+float crtAtan2f(float y, float x) {
+    gInexactCalls.fetch_add(1, std::memory_order_relaxed);
+    return static_cast<float>(std::atan2(static_cast<double>(y), static_cast<double>(x)));
+}
+
+unsigned long long crtInexactCalls() {
+    return gInexactCalls.load(std::memory_order_relaxed);
 }
 
 } // namespace rlios::sim

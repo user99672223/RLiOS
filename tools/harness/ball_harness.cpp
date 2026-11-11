@@ -1,12 +1,17 @@
 // Exactness harness for the ball: replays a recorded scenario through sim/ and compares every
 // tick against the real game's recording by float BIT PATTERN (never with an epsilon).
 //
-// Usage: ball_harness <scenario-dir> [--trace N]
+// Usage: ball_harness <scenario-dir> [--trace N] [--collision <file.rlcol>]
+//   --collision: the arena's triangle meshes (tools/hook/dump_collision.py; game data, never
+//   committed). Without it the world has only the built-in planes, and a scenario that says
+//   "needs collision" is skipped.
 //   <scenario-dir>/scenario.txt  initial state (format: tools/hook/record.py)
 //   <scenario-dir>/rec.tsv       recording: hook tick, frame, label, raw bytes as hex
 // Row k of the recording is the state after tick k+1 from the scenario's initial state.
 // Exit code: 0 all ticks identical, 1 divergence, 2 bad input, 77 reference data not present.
+#include "io/arena_collision.h"
 #include "sim/ball_world.h"
+#include "sim/crt_math.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -56,18 +61,29 @@ struct Field {
     uint32_t ref;
 };
 
+int totalContacts(const BallWorld& w) {
+    int n = 0;
+    for (const Manifold& m : w.manifolds)
+        n += m.count;
+    return n;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: ball_harness <scenario-dir> [--trace N]\n");
+        std::fprintf(stderr,
+                     "usage: ball_harness <scenario-dir> [--trace N] [--collision <file>]\n");
         return 2;
     }
     const std::string dir = argv[1];
     long trace = 0;
+    std::string collisionPath;
     for (int i = 2; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--trace") == 0)
             trace = std::strtol(argv[i + 1], nullptr, 10);
+        else if (std::strcmp(argv[i], "--collision") == 0)
+            collisionPath = argv[i + 1];
     }
 
     std::ifstream scen(dir + "/scenario.txt");
@@ -121,6 +137,7 @@ int main(int argc, char** argv) {
     bool haveInertia = false;
     bool havePos = false, haveVel = false, haveAng = false;
     std::string name = dir;
+    bool needsCollision = false;
     {
         std::string line;
         while (std::getline(scen, line)) {
@@ -133,6 +150,8 @@ int main(int argc, char** argv) {
                 t.push_back(tok);
             if (t.size() >= 2 && t[0] == "name")
                 name = t[1];
+            if (t.size() >= 2 && t[0] == "needs" && t[1] == "collision")
+                needsCollision = true;
             if (t.size() < 5 || t[0] != "ball")
                 continue;
             if (t[1] == "pos") {
@@ -166,8 +185,23 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    BallWorld w;
-    initBallWorld(w, xf, linVel, angVel);
+    rlios::io::ArenaCollisionData arena;
+    bool haveArena = false;
+    if (!collisionPath.empty()) {
+        std::string error;
+        haveArena = arena.load(collisionPath, error);
+        if (!haveArena && needsCollision) {
+            std::printf("SKIP %s: %s (collision data is never committed)\n", name.c_str(),
+                        error.c_str());
+            return 77;
+        }
+    } else if (needsCollision) {
+        std::printf("SKIP %s: needs --collision\n", name.c_str());
+        return 77;
+    }
+
+    static BallWorld w;
+    initBallWorld(w, xf, linVel, angVel, haveArena ? &arena.collision() : nullptr);
     if (haveInertia)
         w.ball.invInertiaWorld = inertia;
 
@@ -216,7 +250,7 @@ int main(int argc, char** argv) {
         if (static_cast<long>(k) < trace) {
             std::printf("tick %zu z %.9g vz %.9g act %d contacts %d%s\n", k + 1,
                         static_cast<double>(b.xf.origin.z), static_cast<double>(b.linVel.z),
-                        b.activation, w.manifolds[2].count, bad ? "  DIVERGED" : "");
+                        b.activation, totalContacts(w), bad ? "  DIVERGED" : "");
         }
         if (bad) {
             if (divergingTicks == 0)
@@ -230,12 +264,14 @@ int main(int argc, char** argv) {
 
     if (divergingTicks == 0) {
         std::printf("PASS %s: %zu/%zu ticks bit-identical (basis, position, linear and angular "
-                    "velocity), final hash %016llx\n",
+                    "velocity), final hash %016llx, %s, %llu calls outside proven-exact math\n",
                     name.c_str(), compared, rows.size(),
-                    static_cast<unsigned long long>(hashBallWorld(w)));
+                    static_cast<unsigned long long>(hashBallWorld(w)),
+                    haveArena ? "planes + meshes" : "planes only", crtInexactCalls());
         return 0;
     }
-    std::printf("FAIL %s: first diverging tick %zu of %zu (%zu ticks matched before it)\n",
-                name.c_str(), firstBad, rows.size(), firstBad - 1);
+    std::printf("FAIL %s: first diverging tick %zu of %zu (%zu ticks matched before it), %llu "
+                "calls outside proven-exact math\n",
+                name.c_str(), firstBad, rows.size(), firstBad - 1, crtInexactCalls());
     return 1;
 }

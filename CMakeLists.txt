@@ -22,12 +22,12 @@ function(rlios_core_flags tgt)
 endfunction()
 
 add_library(rlios_sim STATIC core/sim/placeholder_sim.cpp core/sim/ball_world.cpp
-  core/sim/rb_state.cpp core/sim/crt_math.cpp)
+  core/sim/rb_state.cpp core/sim/crt_math.cpp core/sim/arena_mesh.cpp)
 add_library(rlios_game STATIC core/game/session.cpp core/game/scenario.cpp)
 add_library(rlios_net STATIC core/net/net.cpp)
 add_library(rlios_ui STATIC core/ui/ui.cpp)
 add_library(rlios_audio STATIC core/audio/audio.cpp)
-add_library(rlios_io STATIC core/io/io.cpp)
+add_library(rlios_io STATIC core/io/io.cpp core/io/arena_collision.cpp)
 add_library(rlios_api STATIC core/api/rlios.cpp)
 if(APPLE)
   # Not exercised by CI (the iOS app uses the XcodeGen project); kept for local mac builds.
@@ -43,6 +43,7 @@ foreach(t rlios_sim rlios_game rlios_net rlios_ui rlios_audio rlios_io rlios_api
   rlios_core_flags(${t})
 endforeach()
 target_link_libraries(rlios_game PUBLIC rlios_sim Threads::Threads)
+target_link_libraries(rlios_io PUBLIC rlios_sim)
 target_link_libraries(rlios_api PUBLIC rlios_game rlios_render)
 find_package(Threads REQUIRED)
 
@@ -68,7 +69,7 @@ add_test(NAME cli_runs COMMAND rlios_sim_cli --scenario ${CMAKE_SOURCE_DIR}/core
 # committed: point RLIOS_REFERENCE_DIR at them. Tests report "skipped" where they are absent (CI).
 add_executable(ball_harness tools/harness/ball_harness.cpp)
 rlios_core_flags(ball_harness)
-target_link_libraries(ball_harness PRIVATE rlios_sim)
+target_link_libraries(ball_harness PRIVATE rlios_sim rlios_io)
 if(DEFINED ENV{RLIOS_REFERENCE_DIR})
   set(RLIOS_REFERENCE_DIR "$ENV{RLIOS_REFERENCE_DIR}" CACHE PATH "Reference recordings")
 else()

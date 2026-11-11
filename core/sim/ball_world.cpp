@@ -230,8 +230,9 @@ int sortCachedPoints(const Manifold& m, const ContactPoint& pt) {
     return best;
 }
 
-// btManifoldResult::addContactPoint (stock): cache lookup by local point on A.
-void addContactPoint(Manifold& m, const Transform& ballXf, const Transform& planeXf,
+// btManifoldResult::addContactPoint (stock): cache lookup by local point on A. Returns the index
+// of the manifold point that now holds the contact.
+int addContactPoint(Manifold& m, const Transform& ballXf, const Transform& planeXf,
                      const Vec3& normal, const Vec3& pointOnFloor, float depth) {
     ContactPoint pt;
     const Vec3 pointA = pointOnFloor + normal * depth;
@@ -253,13 +254,10 @@ void addContactPoint(Manifold& m, const Transform& ballXf, const Transform& plan
             nearest = i;
         }
     }
-    if (nearest >= 0) {
-        m.pts[nearest] = pt;
-    } else if (m.count == 4) {
-        m.pts[sortCachedPoints(m, pt)] = pt;
-    } else {
-        m.pts[m.count++] = pt;
-    }
+    if (nearest < 0)
+        nearest = m.count == 4 ? sortCachedPoints(m, pt) : m.count++;
+    m.pts[nearest] = pt;
+    return nearest;
 }
 
 // btPersistentManifold::refreshContactPoints (RVA 0x2AC480, stock).
@@ -334,6 +332,50 @@ void collidePlane(BallWorld& w, int index) {
     }
     if (manifold.count != 0)
         refreshContactPoints(manifold, cv, pl);
+}
+
+// Ball vs one arena triangle mesh: btConvexConcaveCollisionAlgorithm::processCollision
+// (RVA 0x2928B0, the swapped [trimesh][sphere] entry; manifold body0 = ball, body1 = mesh).
+void collideMesh(BallWorld& w, int meshIndex) {
+    const ArenaMesh& mesh = w.arena->meshes[meshIndex];
+    const Transform& cv = w.ball.xf;
+    Manifold& manifold = w.manifolds[kNumPlanes + meshIndex];
+
+    // btConvexTriangleCallback::setTimeStepAndCounters (RVA 0x2991F0): the sphere's box in mesh
+    // space. The extra collision margin added to it is the mesh's, which is 0 (measured).
+    const Transform inMesh = inverse(mesh.xf);
+    const Vec3 c = xform(inMesh, cv.origin);
+    const Vec3 aabbMin = {c.x - kBallRadius, c.y - kBallRadius, c.z - kBallRadius};
+    const Vec3 aabbMax = {c.x + kBallRadius, c.y + kBallRadius, c.z + kBallRadius};
+
+    forEachOverlappingLeaf(mesh, aabbMin, aabbMax, [&](int32_t tri) {
+        Vec3 v[3];
+        meshTriangle(mesh, tri, v);
+        // btConvexTriangleCallback::processTriangle (RVA 0x296BA0): TestTriangleAgainstAabb2.
+        const float lo[3] = {aabbMin.x, aabbMin.y, aabbMin.z};
+        const float hi[3] = {aabbMax.x, aabbMax.y, aabbMax.z};
+        const float t[3][3] = {
+            {v[0].x, v[1].x, v[2].x}, {v[0].y, v[1].y, v[2].y}, {v[0].z, v[1].z, v[2].z}};
+        for (int a = 0; a < 3; ++a) {
+            const float mn = std::fmin(std::fmin(t[a][0], t[a][1]), t[a][2]);
+            const float mx = std::fmax(std::fmax(t[a][0], t[a][1]), t[a][2]);
+            if (mn > hi[a] || mx < lo[a])
+                return;
+        }
+        // SphereTriangleDetector::getClosestPoints (RVA 0x28CC10).
+        const Vec3 centre = invXform(mesh.xf, cv.origin);
+        Vec3 point, normal;
+        float depth;
+        if (!sphereTriangle(v, centre, kBallRadius, kBreakingThreshold, point, normal, depth))
+            return;
+        const Vec3 normalWorld = mul(mesh.xf.basis, normal);
+        const Vec3 pointWorld = xform(mesh.xf, point);
+        const int idx = addContactPoint(manifold, cv, mesh.xf, normalWorld, pointWorld, depth);
+        // Contact-added callback (RVA 0x415850), run on the manifold's copy of the point.
+        adjustInternalEdge(manifold.pts[idx], mesh.xf, v, mesh.info[tri]);
+    });
+    if (manifold.count != 0)
+        refreshContactPoints(manifold, cv, mesh.xf);
 }
 
 // ---- constraint solver -----------------------------------------------------------------------
@@ -527,14 +569,14 @@ void solve(BallWorld& w, const Vec3& totalForce) {
     // split-impulse (penetration recovery) pass. For the velocity pass, the points of a body are
     // accumulated (count, normal, friction, restitution, |rel_pos|) at body+0x250.. and replaced
     // by ONE averaged contact with distance 0 (convertContactSpecial, RVA 0x2B21C0).
-    Row contacts[4 * kNumPlanes + 1];
+    Row contacts[4 * kNumManifolds + 1];
     int numContacts = 0;
     int specialCount = 0;
     Vec3 normalSum = {0.0f, 0.0f, 0.0f};
     float frictionSum = 0.0f;
     float restitutionSum = 0.0f;
     float distSum = 0.0f;
-    for (int mi = 0; mi < kNumPlanes; ++mi) {
+    for (int mi = 0; mi < kNumManifolds; ++mi) {
         for (int i = 0; i < w.manifolds[mi].count; ++i) {
             const ContactPoint& p = w.manifolds[mi].pts[i];
             const Vec3 relPos = p.worldA - b.xf.origin;
@@ -656,6 +698,10 @@ void worldStep(BallWorld& w) {
     // performDiscreteCollisionDetection (RVA 0x279850).
     for (int i = 0; i < kNumPlanes; ++i)
         collidePlane(w, i);
+    if (w.arena != nullptr) {
+        for (int i = 0; i < w.arena->numMeshes; ++i)
+            collideMesh(w, i);
+    }
 
     // Simulation islands (RVA 0x2B1890, stock btSimulationIslandManager::buildIslands): the ball
     // is alone in its island (the floor is static).
@@ -721,7 +767,9 @@ RBState ballRBState(const BallBody& b) {
     return s;
 }
 
-void initBallWorld(BallWorld& w, const Transform& xf, const Vec3& linVel, const Vec3& angVel) {
+void initBallWorld(BallWorld& w, const Transform& xf, const Vec3& linVel, const Vec3& angVel,
+                   const ArenaCollision* arena) {
+    w.arena = arena;
     w.ball.xf = xf;
     w.ball.linVel = linVel;
     w.ball.angVel = angVel;
