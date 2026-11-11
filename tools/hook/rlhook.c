@@ -448,6 +448,8 @@ static u8 *resolve_target(char *t) {
   return find_full(t);
 }
 static int add_watch(char **tok, int nt, int isp);
+static int load_inputs(char **tok);
+static void set_hwbp(u8 *addr);
 static void clear_watch(void);
 static FILE *g_rec;
 static int g_rec_left;
@@ -515,6 +517,13 @@ static void run_commands(void) {
       g_rec = fopen(rp, "wb");
       g_rec_left = atoi(tok[2]);
       fprintf(out, "  recording %d ticks -> %s (%s)\n", g_rec_left, rp, g_rec ? "ok" : "open failed");
+    } else if (!strcmp(tok[0], "inputs") && nt >= 4) {
+      if (nt < 5) tok[4] = NULL;
+      if (nt < 6) tok[5] = NULL;
+      fprintf(out, "  inputs: %d ticks loaded\n", load_inputs(tok));
+    } else if (!strcmp(tok[0], "hwbp") && nt >= 2) {
+      set_hwbp((u8 *)strtoull(tok[1], NULL, 16));
+      fprintf(out, "  hwbp set\n");
     } else if (!strcmp(tok[0], "unwatch")) {
       clear_watch();
     } else if (!strcmp(tok[0], "poke") && nt >= 4) {
@@ -577,6 +586,40 @@ static void run_commands(void) {
   fclose(out);
   DeleteFileA(path2);
 }
+// ---- hardware write watchpoint (RE helper): hwbp <ptr-hex> -> logs writer RIPs (RVA) to <out>\hwbp.tsv ----
+static u8 *g_hwbp_addr;
+static FILE *g_hwbp_log;
+static int g_hwbp_n;
+static LONG CALLBACK hwbp_handler(EXCEPTION_POINTERS *e) {
+  if (e->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(e->ContextRecord->Dr6 & 1)) return EXCEPTION_CONTINUE_SEARCH;
+  if (g_hwbp_log && g_hwbp_n < 3000) {
+    u64 rsp = e->ContextRecord->Rsp;
+    fprintf(g_hwbp_log, "%ld\t%llx\t%08x", g_tick_count, (unsigned long long)(e->ContextRecord->Rip - (u64)g_base), *(u32 *)g_hwbp_addr);
+    for (int k = 0, m = 0; k < 400 && m < 8; k++) { // stack scan: image code addresses (likely return addresses)
+      u64 v = ((u64 *)rsp)[k];
+      if (in_text((u8 *)v)) fprintf(g_hwbp_log, "\t%llx", (unsigned long long)(v - (u64)g_base)), m++;
+    }
+    fputc('\n', g_hwbp_log);
+    fflush(g_hwbp_log);
+    g_hwbp_n++;
+  }
+  e->ContextRecord->Dr6 = 0;
+  return EXCEPTION_CONTINUE_EXECUTION;
+}
+static void set_hwbp(u8 *addr) {
+  static int inst;
+  char path[MAX_PATH];
+  if (!inst) AddVectoredExceptionHandler(1, hwbp_handler), inst = 1;
+  if (!g_hwbp_log) snprintf(path, sizeof path, "%s\\hwbp.tsv", g_out), g_hwbp_log = fopen(path, "wb");
+  g_hwbp_addr = addr, g_hwbp_n = 0;
+  CONTEXT c;
+  memset(&c, 0, sizeof c);
+  c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+  c.Dr0 = (u64)addr;
+  c.Dr7 = addr ? (1 | (1u << 16) | (3u << 18)) : 0; // L0, RW0=01 write, LEN0=11 (4 bytes)
+  SetThreadContext(GetCurrentThread(), &c);
+}
+
 static volatile LONG g_ready;
 
 // ---- per-tick watches: raw bytes of chosen memory ranges, logged at the end of every physics tick ----
@@ -585,6 +628,69 @@ static volatile LONG g_ready;
 //   unwatch                                       clear all
 //   poke <target> <off> <hexbytes>                write memory (scenario setup)
 //   dumpmem <ptr> <len> <file>                    append raw memory to <out>\<file> (collision geometry extraction)
+// ---- per-tick input injection (controller inputs keyed to physics ticks) ----
+//   inputs <target> <off> <file>   load <out>\<file>: one line per physics tick, 9 x 32-bit hex words (VehicleInputs,
+//                                  TAGame._Types_TA.VehicleInputs, 0x24 bytes). Line k is written to target+off at the
+//                                  start of the k-th physics tick after this command (before the game's tick runs);
+//                                  words 0-6 (Throttle..DodgeRight floats) replace, word 7 only bits 0-3
+//                                  (bHandbrake bJump bActivateBoost bHoldingBoost), word 8 only bit 0 (bAirRoll).
+//                                  After the last line the injection stops.
+//   inputs <target> <off> <file> <car>   same, and also call car->SetVehicleInput(line) (Vehicle_TA vtable +0x830,
+//                                  RVA 0xEF1290 in build 2026-10-31: clamps, stores Car.Input) right away, so line k
+//                                  is the car's input in exactly the k-th tick even when the controller only copies
+//                                  its OverrideInput once per rendered frame.
+//   inputs <target> <off> <file> <car> <off2>   also write the line to target+off2 (PlayerController_TA.VehicleInput,
+//                                  which UnrealScript passes to Car.SetVehicleInput inside every physics tick).
+static u32 (*g_inp)[9];
+static int g_inp_n, g_inp_i;
+static u8 *g_inp_dst, *g_inp_dst2, *g_inp_car;
+static u32 g_inp_cur[9];
+static int g_inp_active; // a line is being injected in the current tick
+static int load_inputs(char **tok) {
+  char path[MAX_PATH], line[512];
+  u8 *o = resolve_target(tok[1]);
+  snprintf(path, sizeof path, "%s\\%s", g_out, tok[3]);
+  FILE *f = fopen(path, "rb");
+  if (!o || !f) return -1;
+  int n = 0, cap = 0;
+  u32 (*buf)[9] = NULL;
+  while (fgets(line, sizeof line, f)) {
+    u32 w[9];
+    if (sscanf(line, "%x %x %x %x %x %x %x %x %x", &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], &w[6], &w[7], &w[8]) != 9) continue;
+    if (n == cap) buf = realloc(buf, (cap = cap ? cap * 2 : 1024) * sizeof *buf);
+    memcpy(buf[n++], w, sizeof w);
+  }
+  fclose(f);
+  free(g_inp);
+  g_inp = buf, g_inp_n = n, g_inp_i = 0, g_inp_dst = o + (int)strtol(tok[2], NULL, 0);
+  g_inp_car = tok[4] ? resolve_target(tok[4]) : NULL;
+  g_inp_dst2 = tok[4] && tok[5] ? o + (int)strtol(tok[5], NULL, 0) : NULL;
+  return n;
+}
+static void inject_inputs(void) {
+  if (!g_inp_dst || g_inp_i >= g_inp_n) return;
+  u32 *d = (u32 *)g_inp_dst, *w = g_inp[g_inp_i++];
+  if (!readable(d, 0x24)) return;
+  for (int k = 0; k < 7; k++) d[k] = w[k];
+  d[7] = (d[7] & ~0xFu) | (w[7] & 0xFu);
+  d[8] = (d[8] & ~1u) | (w[8] & 1u);
+  memcpy(g_inp_cur, d, sizeof g_inp_cur);
+  if (g_inp_dst2 && readable(g_inp_dst2, 0x24)) {
+    u32 *d2 = (u32 *)g_inp_dst2;
+    for (int k = 0; k < 7; k++) d2[k] = w[k];
+    d2[7] = (d2[7] & ~0xFu) | (w[7] & 0xFu);
+    d2[8] = (d2[8] & ~1u) | (w[8] & 1u);
+  }
+  g_inp_active = 1;
+  if (g_inp_car && readable(g_inp_car, 8)) {
+    static u32 in[9];
+    memcpy(in, d, sizeof in);
+    typedef void (*setin_fn)(void *, void *);
+    ((setin_fn)(*(void ***)g_inp_car)[0x830 / 8])(g_inp_car, in);
+  }
+  if (g_inp_i >= g_inp_n) g_inp_dst = NULL;
+}
+
 static struct { char label[32]; u8 *base; int ptroff, off, len; } g_watch[32];
 static int g_nwatch;
 //   recstart <file> <nticks>                    log all watches for exactly n ticks into <out>\<file>, then write <file>.done and clear
@@ -638,7 +744,9 @@ static void tick_detour(void *self, float dt, float gz) {
   QueryPerformanceCounter(&q);
   i32 frame_before = *(i32 *)((u8 *)self + 0x1e8);
   if (g_ready && (g_tick_count % 30) == 0) run_commands();
+  inject_inputs();
   g_tick_orig(self, dt, gz);
+  g_inp_active = 0;
   LONG n = InterlockedIncrement(&g_tick_count);
   record_watches(self);
   if (g_ticks && n <= 2000000) {
@@ -648,6 +756,56 @@ static void tick_detour(void *self, float dt, float gz) {
     fprintf(g_ticks, "%ld\t%p\t%d\t%08x\t%08x\t%lld\t%lu\n", n, self, frame_before, dtb, gzb, (long long)q.QuadPart, GetCurrentThreadId());
     if ((n & 0x7f) == 0) fflush(g_ticks);
   }
+}
+
+// ---- buffered input apply: RVA 0xE73200 (build 2026-10-31) copies a per-physics-frame input history entry
+// (this+0xA8, 0x180 B each, first 0x24 B = VehicleInputs) into Car.Input (car = this+0x40) during the tick. Without
+// this detour the controller's frame-rate input reaches the car 1-2 ticks late. After it runs we re-apply the injected
+// line through SetVehicleInput, so the car's input in tick k is exactly line k.
+typedef void (*inhist_fn)(u8 *self, int idx);
+static inhist_fn g_inhist_orig;
+static FILE *g_inhist_log;
+static int g_inhist_logged;
+static void inhist_detour(u8 *self, int idx) {
+  g_inhist_orig(self, idx);
+  u8 *car = (u8 *)rdp(self + 0x40);
+  if (g_inhist_log && g_rec && g_inhist_logged < 4000) {
+    fprintf(g_inhist_log, "%ld\t%d\t%p\t%d\n", g_tick_count, idx, car, g_inp_active), g_inhist_logged++;
+    fflush(g_inhist_log);
+  }
+  if (g_inp_active && g_inp_car && car == g_inp_car) {
+    static u32 in[9];
+    memcpy(in, g_inp_cur, sizeof in);
+    typedef void (*setin_fn)(void *, void *);
+    ((setin_fn)(*(void ***)car)[0x830 / 8])(car, in);
+  }
+}
+static u8 *sig_scan(const u8 *pat, const char *mask, size_t n);
+static int hook_inhist(void) {
+  static const u8 pat[] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x18, 0x48,
+                           0x8b, 0x81, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9, 0x48, 0x63, 0xfa, 0x33, 0xf6, 0x48, 0x8b,
+                           0x51, 0x40, 0x44, 0x8b, 0xd6, 0x4c, 0x6b, 0xc7, 0x70, 0x49, 0x8b, 0x44, 0x00, 0x68};
+  static const char mask[] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+  u8 *t = sig_scan(pat, mask, sizeof pat);
+  if (!t) {
+    LOG("input-history signature not found");
+    return 0;
+  }
+  LOG("input history apply at %p (rva %llx)", t, (unsigned long long)(t - g_base));
+  u8 *tr = (u8 *)VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+  if (!tr) return 0;
+  memcpy(tr, t, 15); // three mov [rsp+x],reg (position independent)
+  tr[15] = 0xFF, tr[16] = 0x25, *(u32 *)(tr + 17) = 0;
+  *(u64 *)(tr + 21) = (u64)(t + 15);
+  g_inhist_orig = (inhist_fn)tr;
+  u8 patch[15] = {0xFF, 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x90};
+  *(u64 *)(patch + 6) = (u64)inhist_detour;
+  DWORD old;
+  VirtualProtect(t, 15, PAGE_EXECUTE_READWRITE, &old);
+  memcpy(t, patch, 15);
+  VirtualProtect(t, 15, old, &old);
+  FlushInstructionCache(GetCurrentProcess(), t, 15);
+  return 1;
 }
 
 static u8 *sig_scan(const u8 *pat, const char *mask, size_t n) {
@@ -782,6 +940,9 @@ static DWORD WINAPI main_thread(LPVOID arg) {
   g_ticks = fopen(path, "wb");
   if (g_ticks) fprintf(g_ticks, "#n\tself\tphysics_frame_before\tdt_bits\tgravz_bits\tqpc\tthread\n");
   hook_tick();
+  snprintf(path, sizeof path, "%s\\inhist.tsv", g_out);
+  g_inhist_log = fopen(path, "wb");
+  hook_inhist();
   hook_aes();
 
   int ok = 0;

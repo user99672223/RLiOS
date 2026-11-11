@@ -11,6 +11,12 @@ Scenario file (text, v1):
     ball   basis 1 0 0  0 1 0  0 0 1     # rotation matrix, row-major (btMatrix3x3 rows)
     ball   quat 0 0 0 1                  # alternative to basis: x y z w (converted like btMatrix3x3::setRotation)
     ball   inertia <9 numbers>           # optional world inverse inertia tensor; default: derived from the rotation
+    car    pos/vel/angvel/basis/quat/inertia   same for the Free Play car
+    input  <from> <to> [throttle v] [steer v] [pitch v] [yaw v] [roll v] [dodgef v] [dodger v]
+                       [handbrake 1] [jump 1] [boost 1] [holdboost 1] [airroll 1]
+           controller inputs (TAGame._Types_TA.VehicleInputs) for recorded ticks from..to-1 (tick 0 = the tick in
+           which the initial state is applied, i.e. the one that produces row 0). Unlisted fields and ticks are 0.
+           Injected by the hook at the start of each physics tick, before the game's own tick code.
 Setting the rotation also sets the body's world inverse inertia tensor (btRigidBody+0x130), which is real state
 (the solver uses it before the next integration refreshes it).
 Unset fields keep whatever the game has. All edits are applied at one tick boundary; recording starts with the
@@ -63,8 +69,10 @@ INV_INERTIA_LOCAL = {"ball": struct.unpack("<f", bytes.fromhex("71f7cc3c"))[0]} 
 
 
 def inertia_world(basis, k):
-    """btRigidBody::updateInertiaTensor: basis.scaled(k) * basis^T, float arithmetic (core/sim ballInvInertiaWorld)."""
-    sc = [f32(v * k) for v in basis]
+    """btRigidBody::updateInertiaTensor: basis.scaled(k) * basis^T, float arithmetic (core/sim ballInvInertiaWorld).
+    k: scalar or per-axis (m_invInertiaLocal); scaled() multiplies column j by k[j]."""
+    k = k if isinstance(k, (list, tuple)) else (k, k, k)
+    sc = [f32(v * k[i % 3]) for i, v in enumerate(basis)]
     out = []
     for i in range(3):
         for j in range(3):
@@ -133,6 +141,43 @@ def find_actor(cls, arena):
     return None
 
 
+OFF_INPUT = 0x81C  # Vehicle_TA.Input (TAGame._Types_TA.VehicleInputs, 0x24 bytes; work/sdk/current/sdk.txt)
+# The game's own input path: PlayerController_TA.bOverrideInput (0xA6C mask 4) makes the controller feed
+# PlayerController_TA.OverrideInput (0xBB0) to Car.SetVehicleInput (vtable+0x830, RVA 0xEF1290) once per rendered
+# frame; the hook also calls SetVehicleInput itself at the start of every tick, so line k is exactly tick k's input.
+# Recorded per tick: car_input (Car.Input, 0x81C) and car_inmisc (0x818..0x848, incl. the replicated byte copies).
+OFF_PC_FLAGS, OFF_PC_OVERRIDE, OFF_PC_VEHICLEINPUT = 0xA6C, 0xBB0, 0xA48
+# Measured with a hardware write watchpoint on Car.Input: inside every physics tick UnrealScript calls
+# Car.SetVehicleInput (exec 0xE3F0B0) with the controller's VehicleInput (0xA48), so that is injected too.
+INPUT_FLOATS = ["throttle", "steer", "pitch", "yaw", "roll", "dodgef", "dodger"]
+INPUT_BITS = {"handbrake": (7, 1), "jump": (7, 2), "boost": (7, 4), "holdboost": (7, 8), "airroll": (8, 1)}
+
+
+def input_lines(inputs, ticks):
+    """One line per tick: 9 hex words of VehicleInputs (see rlhook.c `inputs`)."""
+    out = []
+    for k in range(ticks):
+        w = [0] * 9
+        for a, b, kv in inputs:
+            if a <= k < b:
+                for key, v in kv.items():
+                    if key in INPUT_FLOATS:
+                        w[INPUT_FLOATS.index(key)] = struct.unpack("<I", fbits(v))[0]
+                    elif key in INPUT_BITS:
+                        i, m = INPUT_BITS[key]
+                        w[i] = (w[i] | m) if num(v) != 0 else (w[i] & ~m)
+                    else:
+                        sys.exit("unknown input field " + key)
+        out.append(" ".join("%08x" % x for x in w))
+    return "\n".join(out) + "\n"
+
+
+def hexread(addr, n):
+    txt = send([f"hex {addr:x} {n}"])
+    rows = [l for l in txt.splitlines() if l.strip()[:4].isalnum() and ":" in l and not l.startswith(">")]
+    return "".join("".join(r.split(":")[1].split()) for r in rows)[: 2 * n]
+
+
 def read_ptr(addr):
     txt = send([f"hex {addr:x} 8"])
     row = [l for l in txt.splitlines() if l.strip().startswith("0000:")][-1].split()[1:9]
@@ -142,12 +187,14 @@ def read_ptr(addr):
 def main():
     scen = sys.argv[1]
     keep = "--keep" in sys.argv
-    cfg, edits = {}, {}
+    cfg, edits, inputs = {}, {}, []
     for raw in open(scen):
         t = raw.split("#")[0].split()
         if not t:
             continue
-        if t[0] in ("ball", "car"):
+        if t[0] == "input":
+            inputs.append((int(t[1]), int(t[2]), dict(zip(t[3::2], t[4::2]))))
+        elif t[0] in ("ball", "car"):
             edits.setdefault(t[0], {})[t[1]] = t[2:]
         else:
             cfg[t[0]] = t[1]
@@ -193,11 +240,33 @@ def main():
             h = rows4(basis)
             cmds += [f"poke 0x{bt:x} 0x10 {h}", f"poke 0x{bt:x} 0x50 {h}"]  # world + interpolation transform basis
         inertia = [num(x) for x in e["inertia"][:9]] if "inertia" in e else None
-        if inertia is None and basis and label in INV_INERTIA_LOCAL:
-            inertia = inertia_world(basis, INV_INERTIA_LOCAL[label])
+        if inertia is None and basis:
+            k = INV_INERTIA_LOCAL.get(label)
+            if k is None:  # m_invInertiaLocal (btRigidBody+0x1C0), read live
+                k = list(struct.unpack("<3f", bytes.fromhex(hexread(bt + 0x1C0, 12))))
+            inertia = inertia_world(basis, k)
         if inertia:
             cmds.append(f"poke 0x{bt:x} 0x130 {rows4(inertia)}")  # m_invInertiaTensorWorld
         cmds.append(f"poke 0x{bt:x} 0xf4 0100000000000000")  # ACTIVE_TAG, deactivation time 0 (a resting body sleeps)
+    if inputs:
+        if not car:
+            sys.exit("inputs need the car")
+        with open(os.path.join(SESS, f"{name}.inp"), "w") as f:
+            f.write(input_lines(inputs, ticks))
+        pc = None
+        for line in send(["find PlayerController_TA"]).splitlines():
+            p = line.split()
+            if len(p) == 2 and p[1].startswith(arena + ".TheWorld."):
+                pc = int(p[0], 16)
+        if pc is None:
+            sys.exit("no PlayerController_TA")
+        flags = struct.unpack("<I", bytes.fromhex(hexread(pc + OFF_PC_FLAGS, 4)))[0] | 4  # bOverrideInput
+        cmds += [f"poke 0x{pc:x} 0x{OFF_PC_FLAGS:x} {struct.pack('<I', flags).hex()}",
+                 f"inputs 0x{pc:x} 0x{OFF_PC_OVERRIDE:x} {name}.inp 0x{car:x} 0x{OFF_PC_VEHICLEINPUT:x}",
+                 f"watch car_input 0x{car:x} 0x{OFF_INPUT:x} 0x24", f"watch car_inmisc 0x{car:x} 0x818 0x30"]
+    for extra in filter(None, os.environ.get("RLREC_EXTRA", "").split(";")):  # RE helper, e.g. "hwbp {car+0x81c}"
+        cmds.append(extra.format_map({"car": car or 0, "ball": ball or 0}) if "{" not in extra else
+                    eval('f"' + extra + '"', {}, {"car": car or 0, "ball": ball or 0}))
     cmds.append(f"recstart {name}.tsv {ticks}")
     print(send(cmds))
     done = os.path.join(SESS, f"{name}.tsv.done")

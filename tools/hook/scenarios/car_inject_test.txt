@@ -1,0 +1,14 @@
+# input injection smoke test: car placed on the floor, throttle then steer
+name   car_inject_test
+arena  Stadium_P
+ticks  480
+ball   pos 0 40 1.9
+ball   vel 0 0 0
+ball   angvel 0 0 0
+car    pos 0 -20 0.4
+car    vel 0 0 0
+car    angvel 0 0 0
+car    quat 0 0 0 1
+input  61 240 throttle 1
+input  240 360 throttle 0.7 steer 0.3
+input  360 480 jump 1
